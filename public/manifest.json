@@ -1,0 +1,33 @@
+{
+  "name": "Church Presenter",
+  "short_name": "Church Presenter",
+  "description": "Aplikasi Presentasi Ibadah & LCD Proyektor",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d11",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/src/assets/images/Logo_2.jpeg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "application/x-church-presenter": [".chr"]
+      },
+      "icons": [
+        {
+          "src": "/src/assets/images/Logo_2.jpeg",
+          "sizes": "512x512",
+          "type": "image/jpeg"
+        }
+      ],
+      "launch_type": "single-client"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Church Presenter",
+  "description": "Professional church presentation software for lyrics, scriptures, and media projection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
