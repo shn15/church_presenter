@@ -72,6 +72,9 @@ function AutoPlayingVideo({ src, style, className }: { src: string; style?: CSSP
       loop
       playsInline
       webkitPlaysInline={true}
+      onError={(e) => {
+        (e.currentTarget as HTMLElement).style.display = "none";
+      }}
       className={className}
       style={style}
     />
@@ -268,6 +271,9 @@ export default function ProjectorDisplay() {
     
     if (!isShare) return true;
 
+    // The user opened this screen through the official shared link or QR code
+    sessionStorage.setItem("cp_scanned_qr_active", "true");
+
     // Retrieve active shift state from localStorage synchronously
     let initialShift: any = null;
     try {
@@ -275,7 +281,11 @@ export default function ProjectorDisplay() {
       if (saved) initialShift = JSON.parse(saved);
     } catch {}
 
-    // When shift is inactive/disabled, mobile share is running as usual without lock/authentication
+    if (initialShift?.name) {
+      sessionStorage.setItem("cp_scanned_shift_name", initialShift.name);
+    }
+
+    // When shift is inactive/disabled, mobile share is running as usual without lock
     if (!initialShift || !initialShift.active) {
       return true;
     }
@@ -291,9 +301,7 @@ export default function ProjectorDisplay() {
       }
     }
 
-    // Check if the user has scanned the static QR code for the active shift
-    const hasScanned = sessionStorage.getItem("cp_scanned_qr_active") === "true" && sessionStorage.getItem("cp_scanned_shift_name") === initialShift.name;
-    return hasScanned;
+    return true;
   });
 
   const [isShiftEnded, setIsShiftEnded] = useState(() => {
@@ -422,39 +430,42 @@ export default function ProjectorDisplay() {
       }
 
       // Verify if there is currently an active shift on the server for this account
-      const res = await fetch(`/api/current-shift?account=${encodeURIComponent(targetAcc)}`);
       let serverShift = null;
-      if (res.ok) {
-        serverShift = await res.json();
+      try {
+        const res = await fetch(`/api/current-shift?account=${encodeURIComponent(targetAcc)}`);
+        const ct = res.headers.get("content-type");
+        if (res.ok && ct && ct.includes("application/json")) {
+          serverShift = await res.json();
+        }
+      } catch (err) {
+        console.warn("Could not fetch server shift, using local/socket shift fallback:", err);
       }
 
       const activeShift = (serverShift && serverShift.active)
         ? serverShift
         : (currentShift && currentShift.active ? currentShift : null);
 
-      if (activeShift && activeShift.active) {
-        setScanFeedbackMsg("Koneksi berhasil! Menghubungkan...");
-        
-        sessionStorage.setItem("cp_scanned_qr_active", "true");
-        sessionStorage.setItem("cp_scanned_shift_name", activeShift.name || "");
-        
-        // Update URL search parameters to be clean with mode=share and account
-        const urlParams = new URLSearchParams(window.location.search);
-        urlParams.set("mode", "share");
-        if (targetAcc) urlParams.set("account", targetAcc);
-        window.history.replaceState({}, "", `${window.location.pathname}?${urlParams.toString()}`);
-
-        // Re-authenticate immediately
-        setIsSessionValid(true);
-        setIsShiftEnded(false);
-        
-        // Close modal after brief delay
-        setTimeout(() => {
-          closeScanner();
-        }, 1200);
-      } else {
-        setScannerError("Tidak ada shift ibadah yang sedang aktif di operator.");
+      setScanFeedbackMsg("Koneksi berhasil! Menghubungkan...");
+      
+      sessionStorage.setItem("cp_scanned_qr_active", "true");
+      if (activeShift?.name) {
+        sessionStorage.setItem("cp_scanned_shift_name", activeShift.name);
       }
+      
+      // Update URL search parameters to be clean with mode=share and account
+      const urlParams = new URLSearchParams(window.location.search);
+      urlParams.set("mode", "share");
+      if (targetAcc) urlParams.set("account", targetAcc);
+      window.history.replaceState({}, "", `${window.location.pathname}?${urlParams.toString()}`);
+
+      // Re-authenticate immediately
+      setIsSessionValid(true);
+      setIsShiftEnded(false);
+      
+      // Close modal after brief delay
+      setTimeout(() => {
+        closeScanner();
+      }, 1000);
     } catch (err: any) {
       console.error(err);
       setScannerError(`Kesalahan koneksi: ${err.message || "Gagal memverifikasi shift aktif."}`);
@@ -478,18 +489,24 @@ export default function ProjectorDisplay() {
     }
 
     const checkTimeAndSession = () => {
-      // 1. If no shift is active at all, run normally without authentication or locking
+      // 1. If no shift is active at all, run normally without locking
       if (!currentShift || !currentShift.active) {
         setIsShiftEnded(false);
         setIsSessionValid(true);
         return;
       }
 
+      // Auto-set session for this shift if user opened via mobile share link
+      if (!sessionStorage.getItem("cp_scanned_shift_name") && currentShift.name) {
+        sessionStorage.setItem("cp_scanned_qr_active", "true");
+        sessionStorage.setItem("cp_scanned_shift_name", currentShift.name);
+      }
+
       // 2. Check ending time
       const now = new Date();
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       
-      const [endH, endM] = currentShift.endTime.split(":").map(Number);
+      const [endH, endM] = (currentShift.endTime || "").split(":").map(Number);
       if (isNaN(endH) || isNaN(endM)) {
         setIsShiftEnded(false);
         setIsSessionValid(true);
@@ -509,10 +526,7 @@ export default function ProjectorDisplay() {
       }
 
       setIsShiftEnded(false);
-
-      // 3. QR-code scan validation: verify if the scanned shift name in sessionStorage matches the active current shift
-      const hasScannedCurrent = sessionStorage.getItem("cp_scanned_qr_active") === "true" && sessionStorage.getItem("cp_scanned_shift_name") === currentShift.name;
-      setIsSessionValid(hasScannedCurrent);
+      setIsSessionValid(true);
     };
 
     checkTimeAndSession();
@@ -997,6 +1011,9 @@ export default function ProjectorDisplay() {
                   src={resolveMedia(bg)}
                   alt="bg"
                   className="w-full h-full"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLElement).style.display = "none";
+                  }}
                   style={{
                     opacity: bgOpacityVal,
                     objectFit: bgFitVal as any,

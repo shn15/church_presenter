@@ -60,12 +60,42 @@ export const useSocket = (explicitAccountId?: string) => {
     }
   });
 
+  // Target server URL resolution (query param -> env var -> local storage -> undefined)
+  const targetServerUrl = useMemo(() => {
+    if (typeof window === "undefined") return undefined;
+    const urlParams = new URLSearchParams(window.location.search);
+    const queryServer = urlParams.get("server");
+    if (queryServer) {
+      try {
+        localStorage.setItem("cp_socket_server_url", queryServer);
+      } catch {}
+      return queryServer;
+    }
+    const envServer = (import.meta as any).env?.VITE_SOCKET_URL;
+    if (envServer) return envServer;
+    const storedServer = localStorage.getItem("cp_socket_server_url");
+    if (storedServer) return storedServer;
+    return undefined;
+  }, []);
+
   useEffect(() => {
-    const newSocket = io();
+    const newSocket = io(targetServerUrl || undefined, {
+      transports: ["websocket", "polling"],
+      reconnectionAttempts: 8,
+      reconnectionDelay: 2000,
+      timeout: 10000,
+      autoConnect: true,
+    });
     setSocket(newSocket);
 
-    // Join account room on connection
-    newSocket.emit("join:account", { accountId: targetAccountId });
+    newSocket.on("connect", () => {
+      newSocket.emit("join:account", { accountId: targetAccountId });
+    });
+
+    newSocket.on("connect_error", (err) => {
+      // Graceful fallback warning
+      console.warn("Socket connect_error (falling back to local/cloud sync):", err.message);
+    });
 
     // Listen for socket updates
     newSocket.on("slide:update", (slide: Slide) => {
@@ -92,6 +122,31 @@ export const useSocket = (explicitAccountId?: string) => {
     newSocket.on("clients:count", (count: number) => {
       setClientCount(count);
     });
+
+    // Cross-tab / Cross-window storage event fallback synchronization
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.newValue) return;
+      if (
+        e.key === `cp_current_slide_${targetAccountId}` ||
+        (targetAccountId === "acc_default" && e.key === "cp_current_slide")
+      ) {
+        try {
+          const parsed = cleanSlideForBroadcast(JSON.parse(e.newValue));
+          setCurrentSlide(parsed);
+        } catch {}
+      } else if (
+        e.key === `cp_current_shift_${targetAccountId}` ||
+        (targetAccountId === "acc_default" && e.key === "cp_current_shift")
+      ) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setCurrentShift(parsed);
+        } catch {}
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", handleStorage);
+    }
 
     // Create a broadcast channel specific to this account
     let channel: BroadcastChannel | null = null;
@@ -123,6 +178,7 @@ export const useSocket = (explicitAccountId?: string) => {
 
       return () => {
         newSocket.disconnect();
+        window.removeEventListener("storage", handleStorage);
         channel?.removeEventListener("message", handleBroadcast);
         channel?.close();
       };
@@ -130,8 +186,11 @@ export const useSocket = (explicitAccountId?: string) => {
 
     return () => {
       newSocket.disconnect();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("storage", handleStorage);
+      }
     };
-  }, [targetAccountId]);
+  }, [targetAccountId, targetServerUrl]);
 
   const changeSlide = useCallback((slide: Slide) => {
     const cleaned = cleanSlideForBroadcast(slide);

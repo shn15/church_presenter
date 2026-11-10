@@ -8,11 +8,26 @@ import { getActiveAccountId } from "./accountManager";
 export const getPublicUrl = (pathOrUrl: string): string => {
   if (!pathOrUrl) return "";
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  let fullUrl = "";
   if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-    return pathOrUrl;
+    fullUrl = pathOrUrl;
+  } else {
+    const cleanPath = pathOrUrl.startsWith("/") ? pathOrUrl : "/" + pathOrUrl;
+    fullUrl = origin + cleanPath;
   }
-  const cleanPath = pathOrUrl.startsWith("/") ? pathOrUrl : "/" + pathOrUrl;
-  return origin + cleanPath;
+
+  // If path is for mobile share, automatically attach configured server parameter if present
+  if (fullUrl.includes("mode=share") && !fullUrl.includes("&server=") && typeof window !== "undefined") {
+    try {
+      const serverUrl = localStorage.getItem("cp_socket_server_url") || ((import.meta as any).env?.VITE_SOCKET_URL as string);
+      if (serverUrl) {
+        const sep = fullUrl.includes("?") ? "&" : "?";
+        fullUrl += `${sep}server=${encodeURIComponent(serverUrl)}`;
+      }
+    } catch {}
+  }
+
+  return fullUrl;
 };
 
 /**

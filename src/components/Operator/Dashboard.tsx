@@ -63,11 +63,22 @@ import {
   Moon,
   ChevronDown,
   ExternalLink,
+  Globe,
 } from "lucide-react";
 import { BIBLE_BOOKS, BIBLE_BOOKS_BATAK } from "../../constants/bible";
 import { motion, AnimatePresence } from "motion/react";
 import { QRCodeSVG } from "qrcode.react";
 import { saveMedia, getAllMedia, deleteMedia } from "../../lib/indexedDbMedia";
+import {
+  savePersistentBibles,
+  getPersistentBibles,
+  savePersistentSongs,
+  getPersistentSongs,
+  savePersistentSchedule,
+  getPersistentSchedule,
+  savePersistentPresentations,
+  getPersistentPresentations,
+} from "../../lib/appStorage";
 
 const isLightBg = (bg: string | undefined): boolean => {
   if (!bg) return false; // Default background is black (dark)
@@ -862,6 +873,13 @@ export default function OperatorDashboard() {
   const standbySlide = useRef<Slide | null>(null);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [cloudServerUrl, setCloudServerUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem("cp_socket_server_url") || "";
+    } catch {
+      return "";
+    }
+  });
   const [obsTabActive, setObsTabActive] = useState(true);
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [songToDelete, setSongToDelete] = useState<Song | null>(null);
@@ -1291,13 +1309,13 @@ export default function OperatorDashboard() {
 
   const saveBiblesLocalStorage = (bibles: CustomBible[]) => {
     try {
-      // Strip heavy books content to avoid QuotaExceededError in localStorage,
-      // as the backend handles full persistence and delivers it on mount.
       const minimalBibles = bibles.map((b) => ({ id: b.id, name: b.name }));
       localStorage.setItem("cp_custom_bibles", JSON.stringify(minimalBibles));
     } catch (err: any) {
       console.error("Gagal menyimpan metadata alkitab ke LocalStorage:", err);
     }
+    // Also save complete bibles with all books to IndexedDB permanently
+    savePersistentBibles(bibles);
   };
 
   const [showBibleDbModal, setShowBibleDbModal] = useState(false);
@@ -2796,9 +2814,59 @@ export default function OperatorDashboard() {
     return [];
   });
 
-  // Load custom songs & bibles from backend on mount (scoped to active account)
+  // Load custom songs & bibles from IndexedDB & backend on mount (scoped to active account)
   useEffect(() => {
-    async function loadBackendData() {
+    async function loadPersistentAndBackendData() {
+      // 1. First, hydrate from IndexedDB for 100% offline & serverless data safety
+      try {
+        const idbBibles = await getPersistentBibles();
+        if (Array.isArray(idbBibles) && idbBibles.length > 0) {
+          setCustomBibles((prev) => {
+            const hasBooks = (b: CustomBible) => b.books && Object.keys(b.books).length > 0;
+            const validIdb = idbBibles.filter(hasBooks);
+            if (validIdb.length === 0) return prev;
+            const validIds = new Set(validIdb.map((b) => b.id));
+            const remaining = prev.filter((b) => !validIds.has(b.id));
+            return [...validIdb, ...remaining];
+          });
+        }
+      } catch (err) {
+        console.warn("IndexedDB bibles hydration error:", err);
+      }
+
+      try {
+        const idbSongs = await getPersistentSongs(currentAccountId);
+        if (Array.isArray(idbSongs) && idbSongs.length > 0) {
+          setLibrarySongs((prev) => {
+            if (prev.length === 0) return idbSongs;
+            const prevIds = new Set(prev.map((s) => s.id));
+            const toAdd = idbSongs.filter((s) => !prevIds.has(s.id));
+            return [...prev, ...toAdd];
+          });
+        }
+      } catch (err) {
+        console.warn("IndexedDB songs hydration error:", err);
+      }
+
+      try {
+        const idbSched = await getPersistentSchedule(currentAccountId);
+        if (Array.isArray(idbSched) && idbSched.length > 0) {
+          setSchedule((prev) => (prev.length === 0 ? idbSched : prev));
+        }
+      } catch (err) {
+        console.warn("IndexedDB schedule hydration error:", err);
+      }
+
+      try {
+        const idbPres = await getPersistentPresentations(currentAccountId);
+        if (Array.isArray(idbPres) && idbPres.length > 0) {
+          setLibraryPresentations((prev) => (prev.length === 0 ? idbPres : prev));
+        }
+      } catch (err) {
+        console.warn("IndexedDB presentations hydration error:", err);
+      }
+
+      // 2. Fetch backend if available
       try {
         const resSongs = await fetch(`/api/custom-songs?accountId=${currentAccountId}`);
         if (resSongs.ok) {
@@ -2820,7 +2888,7 @@ export default function OperatorDashboard() {
           }
         }
       } catch (e) {
-        console.error("Failed to load server-side songs:", e);
+        // Backend not available (e.g. Vercel static)
       }
 
       try {
@@ -2836,7 +2904,7 @@ export default function OperatorDashboard() {
           }
         }
       } catch (e) {
-        console.error("Failed to load server-side bibles:", e);
+        // Backend not available
       }
       try {
         const resLocalBibles = await fetch("/api/local-bibles");
@@ -2851,7 +2919,7 @@ export default function OperatorDashboard() {
           }
         }
       } catch (e) {
-        console.error("Failed to load local bibles:", e);
+        // Backend not available
       }
       
       try {
@@ -2874,12 +2942,12 @@ export default function OperatorDashboard() {
           }
         }
       } catch (e) {
-        console.error("Failed to load local backgrounds:", e);
+        // Backend not available
       } finally {
         setIsInitialLoadCompleted(true);
       }
     }
-    loadBackendData();
+    loadPersistentAndBackendData();
   }, [currentAccountId]);
 
   // Safe manual sync function that avoids on-mount race conditions overriding backend
@@ -2896,22 +2964,20 @@ export default function OperatorDashboard() {
     }
   };
 
-  // Sync state back to localStorage whenever librarySongs changes
+  // Sync state back to persistent storage whenever librarySongs changes
   useEffect(() => {
-    try {
-      setItemAccount("cp_library_songs", JSON.stringify(librarySongs), currentAccountId);
-    } catch (err: any) {
-      console.error("Gagal menyimpan daftar lagu ke LocalStorage:", err);
-    }
+    savePersistentSongs(currentAccountId, librarySongs);
   }, [librarySongs, currentAccountId]);
 
+  // Sync state back to persistent storage whenever libraryPresentations changes
   useEffect(() => {
-    try {
-      setItemAccount("cp_library_presentations", JSON.stringify(libraryPresentations), currentAccountId);
-    } catch (err: any) {
-      console.error("Gagal menyimpan presentasi ke LocalStorage:", err);
-    }
+    savePersistentPresentations(currentAccountId, libraryPresentations);
   }, [libraryPresentations, currentAccountId]);
+
+  // Sync schedule whenever schedule changes
+  useEffect(() => {
+    savePersistentSchedule(currentAccountId, schedule);
+  }, [schedule, currentAccountId]);
 
   // Sync state back to server and localStorage whenever customBibles changes
   useEffect(() => {
@@ -3102,7 +3168,7 @@ export default function OperatorDashboard() {
     );
     if (confirmClear) {
       setLibrarySongs([]);
-      localStorage.removeItem("cp_library_songs");
+      savePersistentSongs(currentAccountId, []);
       setSelectedSong(null);
       showToast("Semua lagu berhasil dihapus!", "success");
       try {
@@ -3124,7 +3190,7 @@ export default function OperatorDashboard() {
     setLibrarySongs(updated);
     if (selectedSong?.id === songToDelete.id) setSelectedSong(null);
     syncSongsToBackend(updated);
-    localStorage.setItem("cp_library_songs", JSON.stringify(updated));
+    savePersistentSongs(currentAccountId, updated);
     setSongToDelete(null);
     showToast("Lagu berhasil dihapus dari perpustakaan.", "success");
   };
@@ -3136,7 +3202,7 @@ export default function OperatorDashboard() {
     setLibrarySongs(updated);
     if (selectedSong && ids.includes(selectedSong.id)) setSelectedSong(null);
     syncSongsToBackend(updated);
-    localStorage.setItem("cp_library_songs", JSON.stringify(updated));
+    savePersistentSongs(currentAccountId, updated);
     setBatchSongsToDelete(null);
     setSelectedLibrarySongIds([]);
     showToast(
@@ -3150,14 +3216,7 @@ export default function OperatorDashboard() {
     textMsg: string,
   ) => {
     try {
-      try {
-        localStorage.setItem("cp_library_songs", JSON.stringify(updatedSongs));
-      } catch (errQuota) {
-        console.warn(
-          "Storage quota limit encountered during import save, proceeding with memory state & server backup:",
-          errQuota,
-        );
-      }
+      savePersistentSongs(currentAccountId, updatedSongs);
       setLibrarySongs(updatedSongs);
       setSearch("");
       setActiveTab("library");
@@ -3782,10 +3841,7 @@ export default function OperatorDashboard() {
           return ls;
         });
         setLibrarySongs(updatedSongsList);
-        localStorage.setItem(
-          "cp_library_songs",
-          JSON.stringify(updatedSongsList),
-        );
+        savePersistentSongs(currentAccountId, updatedSongsList);
         syncSongsToBackend(updatedSongsList);
       }
     }
@@ -10349,10 +10405,7 @@ export default function OperatorDashboard() {
                         ];
                       }
                       setLibrarySongs(updatedSongsList);
-                      localStorage.setItem(
-                        "cp_library_songs",
-                        JSON.stringify(updatedSongsList),
-                      );
+                      savePersistentSongs(currentAccountId, updatedSongsList);
                       syncSongsToBackend(updatedSongsList);
                     }
                     if (selectedSong?.id === editingItem.id)
@@ -10455,10 +10508,7 @@ export default function OperatorDashboard() {
                         ];
                       }
                       setLibrarySongs(updatedSongsList);
-                      localStorage.setItem(
-                        "cp_library_songs",
-                        JSON.stringify(updatedSongsList),
-                      );
+                      savePersistentSongs(currentAccountId, updatedSongsList);
                       syncSongsToBackend(updatedSongsList);
                     }
                     if (selectedSong?.id === editingItem.id)
@@ -11770,6 +11820,40 @@ export default function OperatorDashboard() {
                     )}
                   </div>
                 </div>
+
+                {/* Section 5: Cloud Hosting & Mobile Share Synchronization */}
+                <div className="space-y-4 bg-zinc-950/40 border border-[#2A2A2E] p-4 rounded-xl">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-black text-gray-400 uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                      <Globe className="w-3.5 h-3.5 text-blue-400" /> Sinkronisasi Cloud & Hosting (Vercel / GitHub)
+                    </h4>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[8px] font-mono font-bold tracking-wider uppercase">
+                      Cloud Sync Ready
+                    </span>
+                  </div>
+                  <div className="h-px bg-[#2A2A2E]" />
+
+                  <div className="space-y-2">
+                    <label className="text-xs text-gray-300 font-medium block">
+                      URL Backend Socket.io (Opsional untuk Vercel / GitHub Pages)
+                    </label>
+                    <input
+                      type="text"
+                      value={cloudServerUrl}
+                      onChange={(e) => setCloudServerUrl(e.target.value)}
+                      placeholder="Contoh: https://church-presenter.railway.app atau http://192.168.1.5:3000"
+                      className="w-full bg-zinc-900 border border-[#2A2A2E] text-white rounded px-3 py-1.5 text-xs font-mono outline-none focus:border-blue-500 transition-all placeholder:text-gray-600"
+                    />
+                    <div className="p-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 space-y-1">
+                      <p className="text-[10px] text-blue-300 font-bold">
+                        ℹ️ Informasi Hosting di Vercel / GitHub Pages:
+                      </p>
+                      <p className="text-[9px] text-gray-400 leading-relaxed font-sans">
+                        Ketika aplikasi dihosting sebagai frontend statis di Vercel atau GitHub Pages, masukkan URL server backend Node/Socket.io Anda di sini. Link & QR Code Mobile Share akan secara otomatis menyertakan alamat server ini sehingga perangkat mobile jemaat yang memindai QR langsung terhubung tanpa konfigurasi manual!
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Action Buttons */}
@@ -11816,6 +11900,10 @@ export default function OperatorDashboard() {
                       "cp_settings_chroma_key_color",
                       chromaKeyColor,
                     );
+                    localStorage.setItem(
+                      "cp_socket_server_url",
+                      cloudServerUrl.trim(),
+                    );
 
                     const prev = localStorage.getItem("cp_trigger_sync") || "0";
                     localStorage.setItem(
@@ -11824,8 +11912,9 @@ export default function OperatorDashboard() {
                     );
 
                     setShowSettingsModal(false);
+                    showToast("Pengaturan sistem & sinkronisasi berhasil disimpan.", "success");
                   }}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20"
+                  className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20 cursor-pointer"
                 >
                   Simpan & Terapkan
                 </button>
@@ -13601,10 +13690,7 @@ Haleluya pujilah Dia...`}
                     ...librarySongs,
                   ];
                   setLibrarySongs(updated);
-                  localStorage.setItem(
-                    "cp_library_songs",
-                    JSON.stringify(updated),
-                  );
+                  savePersistentSongs(currentAccountId, updated);
                   showToast("Lagu diduplikasi ke Perpustakaan.", "success");
                 }}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors cursor-pointer"
