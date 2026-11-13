@@ -519,7 +519,7 @@ const ai = new GoogleGenAI({
 // Simple in-memory cache for speed
 const scriptureCache = new Map<string, any>();
 
-// Multer storage configuration for saving binary files cleanly
+// Temp multer storage for import files (.chr, .pptx, .ewsx, bible sqlite)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadsDir = path.join(process.cwd(), "uploads");
@@ -540,6 +540,67 @@ const upload = multer({
   limits: { fileSize: 150 * 1024 * 1024 } // 150MB limit
 });
 
+// Dedicated folder storage for background images & videos (public/backgrounds)
+const BG_IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"]);
+const BG_VIDEO_EXTS = new Set([".mp4", ".webm", ".ogg", ".mov", ".m4v"]);
+
+function getBackgroundsFolderDir(): string {
+  const bgsDir = path.join(process.cwd(), "public", "backgrounds");
+  if (!fs.existsSync(bgsDir)) {
+    fs.mkdirSync(bgsDir, { recursive: true });
+  }
+  return bgsDir;
+}
+
+function syncBackgroundsManifest(): { images: string[]; videos: string[] } {
+  const bgsDir = getBackgroundsFolderDir();
+  const files = fs.readdirSync(bgsDir).sort((a, b) => a.localeCompare(b));
+  const images: string[] = [];
+  const videos: string[] = [];
+
+  for (const file of files) {
+    if (file === ".keep" || file === "manifest.json" || file === "README.txt") continue;
+    const ext = path.extname(file).toLowerCase();
+    const urlPath = `/backgrounds/${encodeURIComponent(file)}`;
+    if (BG_IMAGE_EXTS.has(ext)) {
+      images.push(urlPath);
+    } else if (BG_VIDEO_EXTS.has(ext)) {
+      videos.push(urlPath);
+    }
+  }
+
+  try {
+    fs.writeFileSync(
+      path.join(bgsDir, "manifest.json"),
+      JSON.stringify({ images, videos }, null, 2) + "\n",
+      "utf-8"
+    );
+  } catch (err) {
+    console.warn("Could not write backgrounds manifest:", err);
+  }
+
+  return { images, videos };
+}
+
+const bgStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, getBackgroundsFolderDir());
+  },
+  filename: (req, file, cb) => {
+    const cleanOrig = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const targetPath = path.join(getBackgroundsFolderDir(), cleanOrig);
+    const finalName = fs.existsSync(targetPath)
+      ? `${Date.now()}-${cleanOrig}`
+      : cleanOrig;
+    cb(null, finalName);
+  }
+});
+
+const bgUpload = multer({
+  storage: bgStorage,
+  limits: { fileSize: 250 * 1024 * 1024 }
+});
+
 async function startServer() {
   const app = express();
   
@@ -552,7 +613,18 @@ async function startServer() {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
 
-  // Serve static uploaded files caught BEFORE the Vite dev middleware or standard client route with explicit CORS support
+  const backgroundsDir = getBackgroundsFolderDir();
+  syncBackgroundsManifest();
+
+  // Serve the dedicated backgrounds folder directly with CORS & range support
+  app.use("/backgrounds", (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    next();
+  }, express.static(backgroundsDir));
+
+  // Serve legacy /uploads static files caught BEFORE the Vite dev middleware
   app.use("/uploads", (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -586,16 +658,17 @@ async function startServer() {
     return res.json(shift);
   });
 
-  // API Endpoints
-  app.post("/api/upload", upload.array("files"), (req: any, res) => {
+  // API Endpoints: save uploaded background images/videos into the single dedicated folder (public/backgrounds)
+  app.post("/api/upload", bgUpload.array("files"), (req: any, res) => {
     try {
       const files = req.files as Express.Multer.File[];
       if (!files || files.length === 0) {
         return res.status(400).json({ error: "No files uploaded" });
       }
 
-      const urls = files.map(file => `/uploads/${file.filename}`);
-      console.log(`Backend uploaded ${files.length} file(s):`, urls);
+      const urls = files.map(file => `/backgrounds/${encodeURIComponent(file.filename)}`);
+      syncBackgroundsManifest();
+      console.log(`Saved ${files.length} background file(s) to public/backgrounds:`, urls);
       return res.json({ urls });
     } catch (error: any) {
       console.error("Upload error:", error);
@@ -640,34 +713,33 @@ async function startServer() {
     }
   });
 
-  // Get custom backgrounds from public/backgrounds folder
+  // Get custom backgrounds from the single dedicated public/backgrounds folder
   app.get("/api/local-backgrounds", (req, res) => {
     try {
-      const bgsDir = path.join(process.cwd(), "public", "backgrounds");
-      if (!fs.existsSync(bgsDir)) {
-        return res.json({ images: [], videos: [] });
-      }
-      const files = fs.readdirSync(bgsDir);
-      
-      const images: string[] = [];
-      const videos: string[] = [];
-      
-      files.forEach(file => {
-        if (file === ".keep") return;
-        const ext = path.extname(file).toLowerCase();
-        const urlPath = `/backgrounds/${file}`;
-        
-        if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) {
-          images.push(urlPath);
-        } else if (['.mp4', '.webm', '.ogg'].includes(ext)) {
-          videos.push(urlPath);
-        }
-      });
-      
-      return res.json({ images, videos });
+      const manifest = syncBackgroundsManifest();
+      return res.json(manifest);
     } catch (error) {
       console.error("Failed to read local backgrounds:", error);
       return res.json({ images: [], videos: [] });
+    }
+  });
+
+  // Delete a background file from the dedicated public/backgrounds folder
+  app.delete("/api/local-backgrounds", (req, res) => {
+    try {
+      const rawUrl = String(req.query.file || req.body?.url || "");
+      const baseName = decodeURIComponent(rawUrl.split("/").pop() || "").replace(/[\\/]/g, "");
+      if (!baseName || baseName === ".keep" || baseName === "manifest.json" || baseName === "README.txt") {
+        return res.status(400).json({ error: "Invalid filename" });
+      }
+      const targetPath = path.join(getBackgroundsFolderDir(), baseName);
+      if (fs.existsSync(targetPath)) {
+        fs.unlinkSync(targetPath);
+      }
+      const manifest = syncBackgroundsManifest();
+      return res.json({ ok: true, ...manifest });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || "Failed to delete background" });
     }
   });
 

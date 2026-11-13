@@ -22,6 +22,8 @@ const isVideo = (url?: string) => {
   return cleanUrl.endsWith('.mp4') || 
          cleanUrl.endsWith('.webm') || 
          cleanUrl.endsWith('.ogg') ||
+         cleanUrl.endsWith('.mov') ||
+         cleanUrl.endsWith('.m4v') ||
          cleanUrl.includes('.mp4?') ||
          cleanUrl.includes('.webm?') ||
          cleanUrl.includes('.ogg?') ||
@@ -228,8 +230,6 @@ export default function ProjectorDisplay() {
             let localUrl = "";
             if (item.file instanceof Blob && item.file.size > 0) {
               localUrl = URL.createObjectURL(item.file);
-            } else if (item.dataUrl) {
-              localUrl = item.dataUrl;
             }
             if (!localUrl) return;
 
@@ -1079,7 +1079,7 @@ export default function ProjectorDisplay() {
                 <AutoPlayingVideo
                   src={resolvedBgSrc}
                   onMediaError={() => {
-                    if (isLocalOrUploadMedia(bg)) {
+                    if (isLocalOrUploadMedia(bg) || bg.includes("/backgrounds/")) {
                       requestCloudMedia(bg);
                     }
                   }}
@@ -1096,7 +1096,7 @@ export default function ProjectorDisplay() {
                 <SafeBackgroundImage
                   src={resolvedBgSrc}
                   onMediaError={() => {
-                    if (isLocalOrUploadMedia(bg)) {
+                    if (isLocalOrUploadMedia(bg) || bg.includes("/backgrounds/")) {
                       requestCloudMedia(bg);
                     }
                   }}

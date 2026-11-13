@@ -1,10 +1,15 @@
+import {
+  deleteFromOpfsFolder,
+  readAllFromOpfsFolder,
+  saveFileToOpfsFolder,
+} from "./backgroundFolder";
+
 export interface SavedMedia {
-  id: string; // e.g., "/local-media/17205423012-video.mp4" or "/uploads/..."
+  id: string; // e.g., "/backgrounds/video.mp4" or "/local-media/video.mp4"
   file: Blob | File;
   name: string;
   type: string;
   mediaKind?: "image" | "video";
-  dataUrl?: string; // Compressed image dataUrl fallback for instant sync & ultra-resilience
   timestamp: number;
 }
 
@@ -31,9 +36,12 @@ export const openDB = (): Promise<IDBDatabase> => {
 
 /**
  * Converts a File/Blob into an independent in-memory Blob backed by ArrayBuffer
- * so the browser never loses access to the bytes even after weeks or restarts.
+ * so the browser never loses access to the file bytes after restarts or weeks.
  */
-export const toPersistentBlob = async (file: Blob | File, fallbackType = "application/octet-stream"): Promise<Blob> => {
+export const toPersistentBlob = async (
+  file: Blob | File,
+  fallbackType = "application/octet-stream"
+): Promise<Blob> => {
   try {
     const buffer = await file.arrayBuffer();
     return new Blob([buffer], { type: file.type || fallbackType });
@@ -42,57 +50,11 @@ export const toPersistentBlob = async (file: Blob | File, fallbackType = "applic
   }
 };
 
-/**
- * Generates a compressed JPEG/WebP Data URL for an image (max 1280px)
- * so Mobile Share & Vercel static hosting can receive background images without any server.
- */
-export const createCompressedImageDataUrl = (file: Blob | File, maxDim = 1280, quality = 0.8): Promise<string | undefined> => {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      resolve(undefined);
-      return;
-    }
-    const objUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      try {
-        let { width, height } = img;
-        if (width > maxDim || height > maxDim) {
-          const ratio = Math.min(maxDim / width, maxDim / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          URL.revokeObjectURL(objUrl);
-          resolve(undefined);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL("image/jpeg", quality);
-        URL.revokeObjectURL(objUrl);
-        resolve(dataUrl);
-      } catch {
-        URL.revokeObjectURL(objUrl);
-        resolve(undefined);
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(objUrl);
-      resolve(undefined);
-    };
-    img.src = objUrl;
-  });
-};
-
 export const extractMediaPath = (url: string): string => {
   if (!url) return "";
+  if (url.includes("/backgrounds/")) return url.substring(url.indexOf("/backgrounds/"));
   if (url.includes("/local-media/")) return url.substring(url.indexOf("/local-media/"));
   if (url.includes("/uploads/")) return url.substring(url.indexOf("/uploads/"));
-  if (url.includes("/backgrounds/")) return url.substring(url.indexOf("/backgrounds/"));
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
       return new URL(url).pathname;
@@ -108,14 +70,21 @@ export const saveMedia = async (
   file: Blob | File,
   name: string,
   type: string,
-  options?: { mediaKind?: "image" | "video"; dataUrl?: string }
+  options?: { mediaKind?: "image" | "video" }
 ): Promise<void> => {
   try {
-    const db = await openDB();
     const persistentBlob = await toPersistentBlob(file, type);
     const mediaKind =
       options?.mediaKind ||
-      (type.startsWith("video/") || /\.(mp4|webm|ogg)$/i.test(name) ? "video" : "image");
+      (type.startsWith("video/") || /\.(mp4|webm|ogg|mov|m4v)$/i.test(name)
+        ? "video"
+        : "image");
+
+    // 1. Save raw binary file into the dedicated browser OPFS "backgrounds" folder
+    await saveFileToOpfsFolder(id, persistentBlob);
+
+    // 2. Mirror raw binary Blob into IndexedDB
+    const db = await openDB();
     return new Promise<void>((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, "readwrite");
       const store = transaction.objectStore(STORE_NAME);
@@ -125,31 +94,50 @@ export const saveMedia = async (
         name,
         type: type || persistentBlob.type,
         mediaKind,
-        dataUrl: options?.dataUrl,
         timestamp: Date.now(),
       });
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
   } catch (e) {
-    console.error("IndexedDB save failed:", e);
+    console.error("Media save failed:", e);
   }
 };
 
 export const getAllMedia = async (): Promise<SavedMedia[]> => {
+  const byId = new Map<string, SavedMedia>();
+
+  // 1. Read from dedicated OPFS "backgrounds" folder first
+  try {
+    const opfsList = await readAllFromOpfsFolder();
+    opfsList.forEach((item) => {
+      byId.set(item.id, {
+        ...item,
+        timestamp: item.file.lastModified || Date.now(),
+      });
+    });
+  } catch {}
+
+  // 2. Merge from IndexedDB store
   try {
     const db = await openDB();
-    return new Promise<SavedMedia[]>((resolve, reject) => {
+    const idbList = await new Promise<SavedMedia[]>((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, "readonly");
       const store = transaction.objectStore(STORE_NAME);
       const request = store.getAll();
       request.onsuccess = () => resolve(request.result || []);
       request.onerror = () => reject(request.error);
     });
+    idbList.forEach((item) => {
+      if (item && item.id && !byId.has(item.id)) {
+        byId.set(item.id, item);
+      }
+    });
   } catch (e) {
     console.error("IndexedDB get all failed:", e);
-    return [];
   }
+
+  return Array.from(byId.values());
 };
 
 export const findMediaByUrl = async (url: string): Promise<SavedMedia | null> => {
@@ -166,6 +154,7 @@ export const findMediaByUrl = async (url: string): Promise<SavedMedia | null> =>
 };
 
 export const deleteMedia = async (id: string): Promise<void> => {
+  await deleteFromOpfsFolder(id);
   try {
     const db = await openDB();
     return new Promise<void>((resolve, reject) => {

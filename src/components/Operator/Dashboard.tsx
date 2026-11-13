@@ -74,8 +74,8 @@ import {
   deleteMedia,
   extractMediaPath,
   toPersistentBlob,
-  createCompressedImageDataUrl,
 } from "../../lib/indexedDbMedia";
+import { fetchFolderBackgrounds } from "../../lib/backgroundFolder";
 import {
   savePersistentBibles,
   getPersistentBibles,
@@ -561,9 +561,10 @@ export default function OperatorDashboard() {
     let active = true;
     const loadIndexedDBMedia = async () => {
       try {
-        const [list, savedBgs] = await Promise.all([
+        const [list, savedBgs, folderBgs] = await Promise.all([
           getAllMedia(),
           getPersistentBackgrounds(currentAccountId),
+          fetchFolderBackgrounds(),
         ]);
         if (!active) return;
 
@@ -576,8 +577,6 @@ export default function OperatorDashboard() {
             let localUrl = "";
             if (item.file instanceof Blob && item.file.size > 0) {
               localUrl = URL.createObjectURL(item.file);
-            } else if (item.dataUrl) {
-              localUrl = item.dataUrl;
             }
             if (!localUrl) return;
 
@@ -591,6 +590,7 @@ export default function OperatorDashboard() {
               if (filename) mapping[filename] = localUrl;
 
               if (
+                cleanPath.startsWith("/backgrounds/") ||
                 cleanPath.startsWith("/local-media/") ||
                 cleanPath.startsWith("/uploads/")
               ) {
@@ -620,22 +620,30 @@ export default function OperatorDashboard() {
 
         setMediaMapping(mapping);
 
-        // Restore custom images and videos from IndexedDB & persistent storage so media never disappears
+        // Restore custom images and videos from the dedicated /backgrounds/ folder, OPFS/IndexedDB & persistent storage
         const mergedImages = Array.from(
-          new Set([...(savedBgs.images || []), ...discoveredImages]),
+          new Set([
+            ...(folderBgs.images || []),
+            ...(savedBgs.images || []),
+            ...discoveredImages,
+          ]),
         ).filter((u) => typeof u === "string" && !u.startsWith("blob:"));
         const mergedVideos = Array.from(
-          new Set([...(savedBgs.videos || []), ...discoveredVideos]),
+          new Set([
+            ...(folderBgs.videos || []),
+            ...(savedBgs.videos || []),
+            ...discoveredVideos,
+          ]),
         ).filter((u) => typeof u === "string" && !u.startsWith("blob:"));
 
         if (mergedImages.length > 0) {
           setCustomBackgrounds((prev) =>
-            Array.from(new Set([...prev, ...mergedImages])),
+            Array.from(new Set([...mergedImages, ...prev])),
           );
         }
         if (mergedVideos.length > 0) {
           setCustomVideoBackgrounds((prev) =>
-            Array.from(new Set([...prev, ...mergedVideos])),
+            Array.from(new Set([...mergedVideos, ...prev])),
           );
         }
       } catch (err) {
@@ -765,39 +773,57 @@ export default function OperatorDashboard() {
       const newVideos: string[] = [];
       const newMappings: Record<string, string> = {};
 
-      for (const file of files) {
+      // Try saving directly into the dedicated `/public/backgrounds/` folder on server first
+      let serverUrls: string[] = [];
+      if (
+        typeof window !== "undefined" &&
+        !window.location.hostname.endsWith(".vercel.app") &&
+        !window.location.hostname.endsWith(".github.io")
+      ) {
+        try {
+          const formData = new FormData();
+          files.forEach((f) => formData.append("files", f));
+          const res = await fetch("/api/upload", { method: "POST", body: formData });
+          const ct = res.headers.get("content-type") || "";
+          if (res.ok && ct.includes("application/json")) {
+            const data = await res.json();
+            if (Array.isArray(data?.urls) && data.urls.length === files.length) {
+              serverUrls = data.urls;
+            }
+          }
+        } catch {}
+      }
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         const isVid =
           file.type.startsWith("video/") ||
           /\.(mp4|webm|ogg|mov|m4v)$/i.test(file.name);
 
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const localPath = `/local-media/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${safeName}`;
-        const filename = localPath.substring(localPath.lastIndexOf("/") + 1);
+        const targetPath =
+          serverUrls[i] ||
+          `/local-media/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${safeName}`;
+        const filename = targetPath.substring(targetPath.lastIndexOf("/") + 1);
 
-        // Convert File bytes into independent persistent Blob so browser never loses access
+        // Save raw binary Blob into dedicated browser OPFS "backgrounds" folder + IndexedDB (zero base64/code)
         const persistentBlob = await toPersistentBlob(
           file,
           file.type || (isVid ? "video/mp4" : "image/jpeg"),
         );
 
-        let dataUrl: string | undefined;
-        if (!isVid) {
-          dataUrl = await createCompressedImageDataUrl(persistentBlob, 1280, 0.8);
-        }
-
-        await saveMedia(localPath, persistentBlob, file.name, persistentBlob.type, {
+        await saveMedia(targetPath, persistentBlob, file.name, persistentBlob.type, {
           mediaKind: isVid ? "video" : "image",
-          dataUrl,
         });
 
         const localObjectUrl = URL.createObjectURL(persistentBlob);
-        newMappings[localPath] = localObjectUrl;
+        newMappings[targetPath] = localObjectUrl;
         newMappings[filename] = localObjectUrl;
 
         if (isVid) {
-          newVideos.push(localPath);
+          newVideos.push(targetPath);
         } else {
-          newImages.push(localPath);
+          newImages.push(targetPath);
         }
       }
 
@@ -833,20 +859,11 @@ export default function OperatorDashboard() {
       }
 
       showToast(
-        `${files.length} media berhasil ditambahkan & disimpan permanen`,
+        serverUrls.length > 0
+          ? `${files.length} media disimpan langsung ke folder backgrounds/`
+          : `${files.length} media berhasil ditambahkan ke folder penyimpanan`,
         "success",
       );
-
-      // Optional non-blocking backup upload when Express backend is running locally
-      if (
-        typeof window !== "undefined" &&
-        !window.location.hostname.endsWith(".vercel.app") &&
-        !window.location.hostname.endsWith(".github.io")
-      ) {
-        const formData = new FormData();
-        files.forEach((f) => formData.append("files", f));
-        fetch("/api/upload", { method: "POST", body: formData }).catch(() => {});
-      }
     } catch (err) {
       console.error("Error saving uploaded media:", err);
       showToast("Gagal memproses file media", "warn");
@@ -3032,27 +3049,23 @@ export default function OperatorDashboard() {
       }
 
       try {
-        const resBgs = await fetch("/api/local-backgrounds");
-        const ctBgs = resBgs.headers.get("content-type") || "";
-        if (resBgs.ok && ctBgs.includes("application/json")) {
-          const bgs = await resBgs.json();
-          if (bgs.images && Array.isArray(bgs.images)) {
-            setCustomBackgrounds(prev => {
-              const serverUrls = new Set(bgs.images);
-              const uniqueLocal = prev.filter(url => !serverUrls.has(url));
-              return [...bgs.images, ...uniqueLocal];
-            });
-          }
-          if (bgs.videos && Array.isArray(bgs.videos)) {
-            setCustomVideoBackgrounds(prev => {
-              const serverUrls = new Set(bgs.videos);
-              const uniqueLocal = prev.filter(url => !serverUrls.has(url));
-              return [...bgs.videos, ...uniqueLocal];
-            });
-          }
+        const bgs = await fetchFolderBackgrounds();
+        if (bgs.images && bgs.images.length > 0) {
+          setCustomBackgrounds((prev) => {
+            const folderSet = new Set(bgs.images);
+            const uniqueLocal = prev.filter((url) => !folderSet.has(url));
+            return [...bgs.images, ...uniqueLocal];
+          });
+        }
+        if (bgs.videos && bgs.videos.length > 0) {
+          setCustomVideoBackgrounds((prev) => {
+            const folderSet = new Set(bgs.videos);
+            const uniqueLocal = prev.filter((url) => !folderSet.has(url));
+            return [...bgs.videos, ...uniqueLocal];
+          });
         }
       } catch (e) {
-        // Backend not available
+        // Folder manifest not available
       } finally {
         setIsInitialLoadCompleted(true);
       }
@@ -12659,10 +12672,10 @@ export default function OperatorDashboard() {
                 {/* 1. Guidance Callout */}
                 <div className="bg-blue-500/5 border border-blue-500/10 p-4 rounded-xl text-left">
                   <h4 className="text-[10px] font-black uppercase text-blue-400 mb-1 tracking-widest">
-                    Media Gambar & Video Default Dinonaktifkan
+                    Folder Khusus Background (public/backgrounds/)
                   </h4>
                   <p className="text-[11px] text-gray-400 leading-relaxed font-sans">
-                    Semua gambar dan video bawaan telah dihapus dari aplikasi untuk memastikan antarmuka yang bersih dan berkinerja tinggi. Anda dapat menggunakan warna latar belakang solid/gradient melalui panel pengaturan visual slide, atau mengunggah file gambar/video MP4 kustom Anda sendiri di bawah ini.
+                    Semua gambar &amp; video background disimpan dan dibaca langsung dari 1 folder khusus (<code className="text-blue-300">public/backgrounds/</code>) serta folder penyimpanan biner browser (tanpa ditulis menjadi kode). Letakkan file di folder tersebut sebelum deploy ke GitHub/Vercel, atau unggah langsung melalui tombol di bawah.
                   </p>
                 </div>
 
@@ -12746,12 +12759,18 @@ export default function OperatorDashboard() {
 
                                     savePersistentBackgrounds(currentAccountId, nextImgs, nextVids);
 
-                                    // Clean up from IndexedDB
+                                    // Clean up from browser OPFS/IndexedDB & dedicated backgrounds folder
                                     deleteMedia(bg);
                                     const cleanPath = extractMediaPath(bg);
                                     if (cleanPath) deleteMedia(cleanPath);
                                     const filename = bg.substring(bg.lastIndexOf("/") + 1);
                                     if (filename) deleteMedia(filename);
+
+                                    if ((cleanPath || bg).includes("/backgrounds/")) {
+                                      fetch(`/api/local-backgrounds?file=${encodeURIComponent(cleanPath || bg)}`, {
+                                        method: "DELETE",
+                                      }).catch(() => {});
+                                    }
 
                                     showToast("Media berhasil dihapus", "info");
                                   }}

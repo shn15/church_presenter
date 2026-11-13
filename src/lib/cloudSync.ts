@@ -4,7 +4,6 @@ import {
   extractMediaPath,
   findMediaByUrl,
   saveMedia,
-  createCompressedImageDataUrl,
 } from "./indexedDbMedia";
 
 export interface SyncedSettings {
@@ -89,14 +88,6 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [meta, base64] = dataUrl.split(",");
-  const mimeMatch = meta.match(/data:([^;]+)/);
-  const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-  const bytes = base64ToUint8Array(base64);
-  return new Blob([bytes.buffer as ArrayBuffer], { type: mime });
-}
-
 interface CloudSyncCallbacks {
   onSlide?: (slide: Slide, ts: number) => void;
   onShift?: (shift: Shift, ts: number) => void;
@@ -117,7 +108,6 @@ export class CloudSyncClient {
   private lastShiftTs = 0;
   private lastSettingsTs = 0;
 
-  private publishedImages = new Set<string>();
   private requestedMedia = new Map<string, number>();
   private queuedMediaRequests = new Set<string>();
   private incomingChunks = new Map<
@@ -180,7 +170,6 @@ export class CloudSyncClient {
           `${this.prefix}/slide`,
           `${this.prefix}/shift`,
           `${this.prefix}/settings`,
-          `${this.prefix}/media-img/+`,
           `${this.prefix}/media-chunk/+`,
           `${this.prefix}/webrtc/${this.clientId}`,
         ];
@@ -243,23 +232,6 @@ export class CloudSyncClient {
       return;
     }
 
-    if (topic.startsWith(`${p}/media-img/`) && data?.path && data?.dataUrl) {
-      if (data.senderId === this.clientId) return;
-      try {
-        const cleanPath = extractMediaPath(data.path);
-        const existing = await findMediaByUrl(cleanPath);
-        if (!existing) {
-          const blob = dataUrlToBlob(data.dataUrl);
-          await saveMedia(cleanPath, blob, data.name || cleanPath.split("/").pop() || "image.jpg", data.mime || "image/jpeg", {
-            mediaKind: "image",
-            dataUrl: data.dataUrl,
-          });
-          this.callbacks.onMediaReceived?.(cleanPath);
-        }
-      } catch {}
-      return;
-    }
-
     if (topic === `${p}/media-req` && this.isOperatorMode && data?.url) {
       if (data.requesterId === this.clientId) return;
       await this.serveMediaRequest(data);
@@ -287,20 +259,6 @@ export class CloudSyncClient {
         { qos: 1, retain: true }
       );
     }
-    if (this.isOperatorMode) {
-      // Automatically publish referenced local images so Mobile Share gets them right away
-      const urls = [
-        slide.backgroundOverride,
-        slide.background,
-        slide.logoUrl,
-        slide.logoLeftUrl,
-        slide.logoRightUrl,
-      ].filter((u): u is string => Boolean(u && isLocalOrUploadMedia(u)));
-
-      for (const u of urls) {
-        void this.ensureImagePublished(u);
-      }
-    }
   }
 
   public publishShift(shift: Shift) {
@@ -327,53 +285,10 @@ export class CloudSyncClient {
     }
   }
 
-  public async ensureImagePublished(url: string) {
-    if (!this.client?.connected || !url) return;
-    const cleanPath = extractMediaPath(url);
-    if (!isLocalOrUploadMedia(cleanPath)) return;
-    if (this.publishedImages.has(cleanPath)) return;
-
-    const item = await findMediaByUrl(cleanPath);
-    if (!item) return;
-
-    const isVid =
-      item.mediaKind === "video" ||
-      item.type?.startsWith("video/") ||
-      /\.(mp4|webm|ogg)$/i.test(item.name || cleanPath);
-    if (isVid) return;
-
-    let dataUrl = item.dataUrl;
-    if (!dataUrl && item.file) {
-      dataUrl = await createCompressedImageDataUrl(item.file, 1280, 0.78);
-    }
-    if (!dataUrl || dataUrl.length > 480_000) {
-      // If still oversized, re-compress slightly smaller to fit MQTT retained message safely
-      if (item.file) {
-        dataUrl = await createCompressedImageDataUrl(item.file, 960, 0.65);
-      }
-    }
-    if (!dataUrl) return;
-
-    this.publishedImages.add(cleanPath);
-    const hash = hashString(cleanPath);
-    this.client.publish(
-      `${this.prefix}/media-img/${hash}`,
-      JSON.stringify({
-        path: cleanPath,
-        dataUrl,
-        name: item.name,
-        mime: "image/jpeg",
-        ts: Date.now(),
-        senderId: this.clientId,
-      }),
-      { qos: 1, retain: true }
-    );
-  }
-
   public requestMediaTransfer(url: string) {
     if (!url) return;
     const cleanPath = extractMediaPath(url);
-    if (!isLocalOrUploadMedia(cleanPath)) return;
+    if (!isLocalOrUploadMedia(cleanPath) && !cleanPath.includes("/backgrounds/")) return;
 
     if (!this.client?.connected) {
       this.queuedMediaRequests.add(cleanPath);
@@ -381,7 +296,7 @@ export class CloudSyncClient {
     }
 
     const lastReq = this.requestedMedia.get(cleanPath) || 0;
-    if (Date.now() - lastReq < 15000) return; // debounce duplicate requests within 15s
+    if (Date.now() - lastReq < 15000) return;
 
     this.requestedMedia.set(cleanPath, Date.now());
     const requestId = `req_${hashString(cleanPath)}_${this.clientId}`;
@@ -406,21 +321,35 @@ export class CloudSyncClient {
   }) {
     if (!this.client?.connected) return;
     const cleanPath = extractMediaPath(req.path || req.url);
-    const item = await findMediaByUrl(cleanPath);
+    let item = await findMediaByUrl(cleanPath);
+    if ((!item || !item.file) && cleanPath.startsWith("/backgrounds/") && typeof fetch !== "undefined") {
+      try {
+        const res = await fetch(cleanPath);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob.size > 0) {
+            const filename = cleanPath.split("/").pop() || "media";
+            const isVidFallback = blob.type.startsWith("video/") || /\.(mp4|webm|ogg|mov|m4v)$/i.test(filename);
+            item = {
+              id: cleanPath,
+              file: blob,
+              name: filename,
+              type: blob.type || (isVidFallback ? "video/mp4" : "image/jpeg"),
+              mediaKind: isVidFallback ? "video" : "image",
+              timestamp: Date.now(),
+            };
+          }
+        }
+      } catch {}
+    }
     if (!item || !item.file) return;
 
     const isVid =
       item.mediaKind === "video" ||
       item.type?.startsWith("video/") ||
-      /\.(mp4|webm|ogg)$/i.test(item.name || cleanPath);
+      /\.(mp4|webm|ogg|mov|m4v)$/i.test(item.name || cleanPath);
+    const mediaKind: "image" | "video" = isVid ? "video" : "image";
 
-    if (!isVid) {
-      this.publishedImages.delete(cleanPath);
-      await this.ensureImagePublished(cleanPath);
-      return;
-    }
-
-    // Video transfer: Use WebRTC DataChannel if supported, plus MQTT chunked transfer for small videos <= 6MB
     const fileSize = item.file.size || 0;
     if (fileSize <= 6 * 1024 * 1024) {
       try {
@@ -436,8 +365,8 @@ export class CloudSyncClient {
               requestId: req.requestId,
               path: cleanPath,
               name: item.name,
-              mime: item.type || "video/mp4",
-              mediaKind: "video",
+              mime: item.type || (isVid ? "video/mp4" : "image/jpeg"),
+              mediaKind,
               index: i,
               total,
               chunk: b64.slice(i * chunkLen, (i + 1) * chunkLen),
@@ -453,9 +382,8 @@ export class CloudSyncClient {
       } catch {}
     }
 
-    // Large video (> 6MB): WebRTC P2P DataChannel transfer
     if (typeof RTCPeerConnection !== "undefined") {
-      void this.sendVideoViaWebRTC(req.requestId, req.requesterId, cleanPath, item);
+      void this.sendBinaryViaWebRTC(req.requestId, req.requesterId, cleanPath, item, mediaKind);
     }
   }
 
@@ -469,8 +397,8 @@ export class CloudSyncClient {
     if (!entry) {
       entry = {
         path,
-        name: name || path.split("/").pop() || "media.mp4",
-        mime: mime || "video/mp4",
+        name: name || path.split("/").pop() || "media",
+        mime: mime || "application/octet-stream",
         mediaKind: mediaKind || "video",
         total,
         chunks: new Map(),
@@ -495,11 +423,12 @@ export class CloudSyncClient {
     }
   }
 
-  private async sendVideoViaWebRTC(
+  private async sendBinaryViaWebRTC(
     requestId: string,
     targetPeerId: string,
     cleanPath: string,
-    item: { file: Blob; name: string; type: string }
+    item: { file: Blob; name: string; type: string },
+    mediaKind: "image" | "video"
   ) {
     try {
       const pc = new RTCPeerConnection({
@@ -517,7 +446,8 @@ export class CloudSyncClient {
               meta: true,
               path: cleanPath,
               name: item.name,
-              mime: item.type || "video/mp4",
+              mime: item.type || (mediaKind === "video" ? "video/mp4" : "image/jpeg"),
+              mediaKind,
               size: item.file.size,
             })
           );
@@ -579,7 +509,7 @@ export class CloudSyncClient {
         pc.ondatachannel = (ev) => {
           const dc = ev.channel;
           dc.binaryType = "arraybuffer";
-          let meta: { path: string; name: string; mime: string } | null = null;
+          let meta: { path: string; name: string; mime: string; mediaKind?: "image" | "video" } | null = null;
           const buffers: ArrayBuffer[] = [];
 
           dc.onmessage = async (msg) => {
@@ -589,10 +519,10 @@ export class CloudSyncClient {
                 if (parsed.meta) {
                   meta = parsed;
                 } else if (parsed.done && meta) {
-                  const blob = new Blob(buffers, { type: meta.mime || "video/mp4" });
+                  const blob = new Blob(buffers, { type: meta.mime || "application/octet-stream" });
                   const cleanPath = extractMediaPath(meta.path);
-                  await saveMedia(cleanPath, blob, meta.name, meta.mime || "video/mp4", {
-                    mediaKind: "video",
+                  await saveMedia(cleanPath, blob, meta.name, meta.mime || "application/octet-stream", {
+                    mediaKind: meta.mediaKind || "video",
                   });
                   this.callbacks.onMediaReceived?.(cleanPath);
                   try {
