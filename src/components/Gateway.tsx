@@ -83,7 +83,10 @@ export default function Gateway() {
     setActiveAccountState(curr);
 
     fetch("/api/accounts")
-      .then((res) => (res.ok ? res.json() : []))
+      .then((res) => {
+        const ct = res.headers.get("content-type") || "";
+        return res.ok && ct.includes("application/json") ? res.json() : [];
+      })
       .then((data) => {
         if (Array.isArray(data) && data.length > 0) {
           setAccounts(data);

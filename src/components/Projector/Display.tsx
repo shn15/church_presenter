@@ -5,9 +5,10 @@ import { Monitor, Lock, Clock, QrCode, Camera, RefreshCw, X, Keyboard, Check, Al
 import { QRCodeSVG } from "qrcode.react";
 import { AppLogo } from "../Logo";
 import { Html5Qrcode } from "html5-qrcode";
-import { getAllMedia } from "../../lib/indexedDbMedia";
+import { extractMediaPath, getAllMedia } from "../../lib/indexedDbMedia";
 import { getPublicUrl } from "../../lib/projectorUtils";
 import { getActiveAccountId } from "../../lib/accountManager";
+import { isLocalOrUploadMedia } from "../../lib/cloudSync";
 
 const isVideo = (url?: string) => {
   if (!url) return false;
@@ -32,25 +33,39 @@ const isVideo = (url?: string) => {
          cleanUrl.includes('.ogg');
 };
 
-function AutoPlayingVideo({ src, style, className }: { src: string; style?: CSSProperties; className?: string }) {
+function AutoPlayingVideo({
+  src,
+  style,
+  className,
+  onMediaError,
+}: {
+  src: string;
+  style?: CSSProperties;
+  className?: string;
+  onMediaError?: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
+    setHasError(false);
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !src) return;
 
-    // Force muted and try playing
+    // Force muted and iOS inline attributes cleanly
     video.defaultMuted = true;
     video.muted = true;
-    
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+
     // Explicitly load and play
     video.load();
-    
+
     const playPromise = video.play();
     if (playPromise !== undefined) {
       playPromise.catch((error) => {
         console.warn("Video play failed or was prevented:", error);
-        
+
         // Retry playing on any document click/touch as a fallback for strict browser autoplay policies
         const handleInteraction = () => {
           video.play().catch(() => {});
@@ -63,20 +78,58 @@ function AutoPlayingVideo({ src, style, className }: { src: string; style?: CSSP
     }
   }, [src]);
 
+  if (!src || hasError) return null;
+
   return (
     <video
+      key={src}
       ref={videoRef}
       src={src}
       muted
       autoPlay
       loop
       playsInline
-      webkitPlaysInline={true}
-      onError={(e) => {
-        (e.currentTarget as HTMLElement).style.display = "none";
+      onError={() => {
+        setHasError(true);
+        onMediaError?.();
       }}
       className={className}
       style={style}
+    />
+  );
+}
+
+function SafeBackgroundImage({
+  src,
+  style,
+  className,
+  onMediaError,
+}: {
+  src: string;
+  style?: CSSProperties;
+  className?: string;
+  onMediaError?: () => void;
+}) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
+
+  if (!src || hasError) return null;
+
+  return (
+    <img
+      key={src}
+      src={src}
+      alt="bg"
+      className={className}
+      onError={() => {
+        setHasError(true);
+        onMediaError?.();
+      }}
+      style={style}
+      referrerPolicy="no-referrer"
     />
   );
 }
@@ -160,7 +213,7 @@ const isLightBg = (bg: string | undefined): boolean => {
 };
 
 export default function ProjectorDisplay() {
-  const { currentSlide, currentShift } = useSocket();
+  const { currentSlide, currentShift, syncedSettings, mediaUpdateTick, requestCloudMedia } = useSocket();
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -171,14 +224,25 @@ export default function ProjectorDisplay() {
         if (!active) return;
         const mapping: Record<string, string> = {};
         list.forEach((item) => {
-          const localUrl = URL.createObjectURL(item.file);
-          mapping[item.id] = localUrl;
-          
-          const cleanPath = item.id.startsWith("http") ? new URL(item.id).pathname : item.id;
-          mapping[cleanPath] = localUrl;
-          
-          const filename = item.id.substring(item.id.lastIndexOf("/") + 1);
-          mapping[filename] = localUrl;
+          try {
+            let localUrl = "";
+            if (item.file instanceof Blob && item.file.size > 0) {
+              localUrl = URL.createObjectURL(item.file);
+            } else if (item.dataUrl) {
+              localUrl = item.dataUrl;
+            }
+            if (!localUrl) return;
+
+            mapping[item.id] = localUrl;
+            const cleanPath = extractMediaPath(item.id);
+            if (cleanPath) {
+              mapping[cleanPath] = localUrl;
+              const filename = cleanPath.substring(cleanPath.lastIndexOf("/") + 1);
+              if (filename) mapping[filename] = localUrl;
+            }
+          } catch (itemErr) {
+            console.warn("Skipped malformed IndexedDB media item:", item?.id, itemErr);
+          }
         });
         setMediaUrls(mapping);
       } catch (err) {
@@ -189,23 +253,41 @@ export default function ProjectorDisplay() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [mediaUpdateTick]);
+
+  // Automatically request any missing local/uploaded background or logo media over cloud sync
+  useEffect(() => {
+    if (!currentSlide) return;
+    const candidates = [
+      currentSlide.backgroundOverride,
+      currentSlide.background,
+      currentSlide.logoUrl,
+      currentSlide.logoLeftUrl,
+      currentSlide.logoRightUrl,
+    ].filter((u): u is string => Boolean(u && isLocalOrUploadMedia(u)));
+
+    for (const url of candidates) {
+      const cleanPath = extractMediaPath(url);
+      const filename = cleanPath.split("/").pop() || "";
+      if (!mediaUrls[url] && !mediaUrls[cleanPath] && !(filename && mediaUrls[filename])) {
+        requestCloudMedia(cleanPath || url);
+      }
+    }
+  }, [currentSlide, mediaUrls, requestCloudMedia]);
 
   const resolveMedia = useCallback((url?: string) => {
     if (!url) return "";
     if (url.startsWith("data:")) return url;
 
-    // Handle blob: URLs (check if local mediaUrls has a match)
+    // Normalize path first so IndexedDB cache matches regardless of origin or blob prefix
+    const cleanPath = extractMediaPath(url);
+    if (mediaUrls[url]) return mediaUrls[url];
+    if (cleanPath && mediaUrls[cleanPath]) return mediaUrls[cleanPath];
+    const filename = cleanPath.split("/").pop();
+    if (filename && mediaUrls[filename]) return mediaUrls[filename];
+
+    // Handle blob: URLs that weren't in mediaUrls
     if (url.startsWith("blob:")) {
-      if (mediaUrls[url]) return mediaUrls[url];
-      if (url.includes("/uploads/")) {
-        const pathOnly = url.substring(url.indexOf("/uploads/"));
-        if (mediaUrls[pathOnly]) return mediaUrls[pathOnly];
-      }
-      if (url.includes("/backgrounds/")) {
-        const pathOnly = url.substring(url.indexOf("/backgrounds/"));
-        if (mediaUrls[pathOnly]) return mediaUrls[pathOnly];
-      }
       const stripped = url.replace(/^blob:/, "");
       if (stripped.startsWith("http://") || stripped.startsWith("https://")) {
         url = stripped;
@@ -214,22 +296,12 @@ export default function ProjectorDisplay() {
 
     let processedUrl = url;
 
-    // First check local IndexedDB cache for matching path or filename
-    const pathOnly = url.includes("/uploads/")
-      ? url.substring(url.indexOf("/uploads/"))
-      : url.includes("/backgrounds/")
-      ? url.substring(url.indexOf("/backgrounds/"))
-      : url;
-
-    if (mediaUrls[pathOnly]) return mediaUrls[pathOnly];
-    const filename = pathOnly.split("/").pop();
-    if (filename && mediaUrls[filename]) return mediaUrls[filename];
-    if (mediaUrls[url]) return mediaUrls[url];
-
     // Dynamic origin resolution for uploaded backgrounds and assets
-    if (url.includes("/uploads/") || url.includes("/backgrounds/")) {
-      if (url.startsWith("/")) {
-        processedUrl = window.location.origin + url;
+    if (url.includes("/local-media/")) {
+      return cleanPath;
+    } else if (url.includes("/uploads/") || url.includes("/backgrounds/")) {
+      if (cleanPath.startsWith("/")) {
+        processedUrl = window.location.origin + cleanPath;
       } else {
         processedUrl = url;
       }
@@ -622,6 +694,18 @@ export default function ProjectorDisplay() {
   }, []);
 
   useEffect(() => {
+    if (!syncedSettings) return;
+    if (syncedSettings.outputResolution) setOutputResolution(syncedSettings.outputResolution);
+    if (syncedSettings.transitionDuration !== undefined) setTransitionDuration(syncedSettings.transitionDuration);
+    if (syncedSettings.globalFontFamily) setGlobalFontFamily(syncedSettings.globalFontFamily);
+    if (syncedSettings.globalTextTransform) setGlobalTextTransform(syncedSettings.globalTextTransform);
+    if (syncedSettings.lowerThirdMode !== undefined) setLowerThirdMode(syncedSettings.lowerThirdMode);
+    if (syncedSettings.globalFontSizeScale !== undefined) setGlobalFontSizeScale(syncedSettings.globalFontSizeScale);
+    if (syncedSettings.globalTextShadowStyle) setGlobalTextShadowStyle(syncedSettings.globalTextShadowStyle);
+    if (syncedSettings.chromaKeyColor) setChromaKeyColor(syncedSettings.chromaKeyColor);
+  }, [syncedSettings]);
+
+  useEffect(() => {
     if (currentSlide) {
       console.log("Projector received slide:", currentSlide.type, currentSlide.title);
     }
@@ -961,11 +1045,8 @@ export default function ProjectorDisplay() {
         {/* Background with intelligent color / image / video rendering support */}
       {!lowerThirdMode && (() => {
         const rawBg = currentSlide.backgroundOverride || currentSlide.background || "";
-        const bgKey = rawBg.includes("/uploads/")
-          ? rawBg.substring(rawBg.indexOf("/uploads/"))
-          : rawBg.includes("/backgrounds/")
-          ? rawBg.substring(rawBg.indexOf("/backgrounds/"))
-          : rawBg;
+        const bgKey = extractMediaPath(rawBg) || rawBg;
+        const resolvedBgSrc = resolveMedia(rawBg);
 
         return (
           <AnimatePresence mode="wait">
@@ -996,7 +1077,12 @@ export default function ProjectorDisplay() {
 
               return isVideo(bg) ? (
                 <AutoPlayingVideo
-                  src={resolveMedia(bg)}
+                  src={resolvedBgSrc}
+                  onMediaError={() => {
+                    if (isLocalOrUploadMedia(bg)) {
+                      requestCloudMedia(bg);
+                    }
+                  }}
                   className="w-full h-full"
                   style={{
                     opacity: bgOpacityVal,
@@ -1007,13 +1093,14 @@ export default function ProjectorDisplay() {
                   }}
                 />
               ) : (
-                <img
-                  src={resolveMedia(bg)}
-                  alt="bg"
-                  className="w-full h-full"
-                  onError={(e) => {
-                    (e.currentTarget as HTMLElement).style.display = "none";
+                <SafeBackgroundImage
+                  src={resolvedBgSrc}
+                  onMediaError={() => {
+                    if (isLocalOrUploadMedia(bg)) {
+                      requestCloudMedia(bg);
+                    }
                   }}
+                  className="w-full h-full"
                   style={{
                     opacity: bgOpacityVal,
                     objectFit: bgFitVal as any,
@@ -1021,7 +1108,6 @@ export default function ProjectorDisplay() {
                     filter: `brightness(${bgBrightnessVal}) blur(${bgBlurVal}px)`,
                     transform: `scale(${bgScaleVal})`,
                   }}
-                  referrerPolicy="no-referrer"
                 />
               );
             })()}
@@ -1104,7 +1190,7 @@ export default function ProjectorDisplay() {
             <motion.div
               key={currentSlide.content + currentSlide.type}
               {...motionProps}
-              className="w-full"
+              className="w-full h-full flex flex-col justify-center"
             >
               {currentSlide.type === 'lyrics' && currentSlide.content && (
                 <div className={lowerThirdMode ? "bg-black/75 backdrop-blur-md px-10 py-5 rounded-2xl shadow-xl w-full text-center border border-white/10" : "w-full"}>
@@ -1160,8 +1246,8 @@ export default function ProjectorDisplay() {
               )}
 
               {currentSlide.type === 'logo' && (
-                <div className="flex items-center justify-center w-full h-full max-h-[85vh] max-w-[85vw] mx-auto">
-                  <AppLogo className="w-[85vw] h-[85vh] max-w-full max-h-full drop-shadow-[0_25px_60px_rgba(0,0,0,0.9)]" showText={false} />
+                <div className="flex items-center justify-center w-full h-full mx-auto">
+                  <AppLogo className="w-[55vmin] h-[55vmin] max-w-[85vw] max-h-[75vh] drop-shadow-[0_25px_60px_rgba(0,0,0,0.9)]" showText={false} />
                 </div>
               )}
 

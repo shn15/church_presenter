@@ -1,7 +1,7 @@
 {
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!assets/|backgrounds/|bibles/|uploads/|logo\\.jpeg|manifest\\.json|404\\.html|favicon\\.ico).*)",
       "destination": "/index.html"
     }
   ]

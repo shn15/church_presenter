@@ -12,6 +12,7 @@ const STORE_SONGS = "songs";
 const STORE_BIBLES = "bibles";
 const STORE_SCHEDULES = "schedules";
 const STORE_PRESENTATIONS = "presentations";
+const STORE_BACKGROUNDS = "backgrounds";
 
 function openStorageDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -19,7 +20,7 @@ function openStorageDB(): Promise<IDBDatabase> {
       reject(new Error("IndexedDB not supported in this environment"));
       return;
     }
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, 2);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_SONGS)) {
@@ -33,6 +34,9 @@ function openStorageDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_PRESENTATIONS)) {
         db.createObjectStore(STORE_PRESENTATIONS, { keyPath: "accountId" });
+      }
+      if (!db.objectStoreNames.contains(STORE_BACKGROUNDS)) {
+        db.createObjectStore(STORE_BACKGROUNDS, { keyPath: "accountId" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -229,3 +233,76 @@ export async function getPersistentSchedule(accountId: string): Promise<Schedule
     return [];
   }
 }
+
+// Background URLs per account persistence
+export async function savePersistentBackgrounds(
+  accountId: string,
+  images: string[],
+  videos: string[]
+): Promise<void> {
+  try {
+    localStorage.setItem("cp_custom_bgs", JSON.stringify(images));
+    localStorage.setItem("cp_custom_video_bgs", JSON.stringify(videos));
+    setItemAccount("cp_custom_bgs", JSON.stringify(images), accountId);
+    setItemAccount("cp_custom_video_bgs", JSON.stringify(videos), accountId);
+  } catch {}
+
+  try {
+    const db = await openStorageDB();
+    const tx = db.transaction(STORE_BACKGROUNDS, "readwrite");
+    const store = tx.objectStore(STORE_BACKGROUNDS);
+    store.put({ accountId, images, videos, updatedAt: Date.now() });
+  } catch (err) {
+    console.warn("IndexedDB backgrounds save error:", err);
+  }
+}
+
+export async function getPersistentBackgrounds(
+  accountId: string
+): Promise<{ images: string[]; videos: string[] }> {
+  const readLocal = () => {
+    let images: string[] = [];
+    let videos: string[] = [];
+    try {
+      const rawImgs = getItemAccount("cp_custom_bgs", accountId) || localStorage.getItem("cp_custom_bgs");
+      if (rawImgs) {
+        const parsed = JSON.parse(rawImgs);
+        if (Array.isArray(parsed)) images = parsed.filter((u) => typeof u === "string");
+      }
+    } catch {}
+    try {
+      const rawVids = getItemAccount("cp_custom_video_bgs", accountId) || localStorage.getItem("cp_custom_video_bgs");
+      if (rawVids) {
+        const parsed = JSON.parse(rawVids);
+        if (Array.isArray(parsed)) videos = parsed.filter((u) => typeof u === "string");
+      }
+    } catch {}
+    return { images, videos };
+  };
+
+  try {
+    const db = await openStorageDB();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(STORE_BACKGROUNDS, "readonly");
+      const store = tx.objectStore(STORE_BACKGROUNDS);
+      const req = store.get(accountId);
+      req.onsuccess = () => {
+        const local = readLocal();
+        if (req.result) {
+          const dbImgs = Array.isArray(req.result.images) ? req.result.images : [];
+          const dbVids = Array.isArray(req.result.videos) ? req.result.videos : [];
+          resolve({
+            images: Array.from(new Set([...dbImgs, ...local.images])),
+            videos: Array.from(new Set([...dbVids, ...local.videos])),
+          });
+        } else {
+          resolve(local);
+        }
+      };
+      req.onerror = () => resolve(readLocal());
+    });
+  } catch {
+    return readLocal();
+  }
+}
+

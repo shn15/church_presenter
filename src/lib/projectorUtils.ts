@@ -4,6 +4,7 @@
  */
 
 import { getActiveAccountId } from "./accountManager";
+import { getSyncRoomId } from "./cloudSync";
 
 export const getPublicUrl = (pathOrUrl: string): string => {
   if (!pathOrUrl) return "";
@@ -16,13 +17,27 @@ export const getPublicUrl = (pathOrUrl: string): string => {
     fullUrl = origin + cleanPath;
   }
 
-  // If path is for mobile share, automatically attach configured server parameter if present
-  if (fullUrl.includes("mode=share") && !fullUrl.includes("&server=") && typeof window !== "undefined") {
+  // If path is for mobile share, attach room ID for serverless cloud sync & configured server if present
+  if (fullUrl.includes("mode=share") && typeof window !== "undefined") {
     try {
-      const serverUrl = localStorage.getItem("cp_socket_server_url") || ((import.meta as any).env?.VITE_SOCKET_URL as string);
-      if (serverUrl) {
+      let accId = getActiveAccountId();
+      try {
+        const parsed = new URL(fullUrl);
+        accId = parsed.searchParams.get("account") || accId;
+      } catch {}
+
+      if (!fullUrl.includes("room=")) {
+        const roomId = getSyncRoomId(accId);
         const sep = fullUrl.includes("?") ? "&" : "?";
-        fullUrl += `${sep}server=${encodeURIComponent(serverUrl)}`;
+        fullUrl += `${sep}room=${encodeURIComponent(roomId)}`;
+      }
+
+      if (!fullUrl.includes("&server=")) {
+        const serverUrl = localStorage.getItem("cp_socket_server_url") || ((import.meta as any).env?.VITE_SOCKET_URL as string);
+        if (serverUrl) {
+          const sep = fullUrl.includes("?") ? "&" : "?";
+          fullUrl += `${sep}server=${encodeURIComponent(serverUrl)}`;
+        }
       }
     } catch {}
   }

@@ -68,7 +68,14 @@ import {
 import { BIBLE_BOOKS, BIBLE_BOOKS_BATAK } from "../../constants/bible";
 import { motion, AnimatePresence } from "motion/react";
 import { QRCodeSVG } from "qrcode.react";
-import { saveMedia, getAllMedia, deleteMedia } from "../../lib/indexedDbMedia";
+import {
+  saveMedia,
+  getAllMedia,
+  deleteMedia,
+  extractMediaPath,
+  toPersistentBlob,
+  createCompressedImageDataUrl,
+} from "../../lib/indexedDbMedia";
 import {
   savePersistentBibles,
   getPersistentBibles,
@@ -78,6 +85,8 @@ import {
   getPersistentSchedule,
   savePersistentPresentations,
   getPersistentPresentations,
+  savePersistentBackgrounds,
+  getPersistentBackgrounds,
 } from "../../lib/appStorage";
 
 const isLightBg = (bg: string | undefined): boolean => {
@@ -464,6 +473,10 @@ export default function OperatorDashboard() {
     }
   };
   const [previewSlide, setPreviewSlide] = useState<Slide | null>(null);
+  // Active Account reference
+  const currentAccount = getActiveAccount();
+  const currentAccountId = currentAccount.id;
+
   const {
     socket,
     currentSlide,
@@ -471,6 +484,9 @@ export default function OperatorDashboard() {
     clientCount,
     currentShift,
     updateShift,
+    syncSettings,
+    mediaUpdateTick,
+    notifyMediaUpdated,
   } = useSocket();
   const changeSlide = useCallback(
     (slide: Slide) => {
@@ -507,106 +523,16 @@ export default function OperatorDashboard() {
 
   const [mediaMapping, setMediaMapping] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    let active = true;
-    const loadIndexedDBMedia = async () => {
-      try {
-        const list = await getAllMedia();
-        if (!active) return;
-        const mapping: Record<string, string> = {};
-        list.forEach((item) => {
-          const localUrl = URL.createObjectURL(item.file);
-          mapping[item.id] = localUrl;
-          
-          const cleanPath = item.id.startsWith("http") ? new URL(item.id).pathname : item.id;
-          mapping[cleanPath] = localUrl;
-          
-          const filename = item.id.substring(item.id.lastIndexOf("/") + 1);
-          mapping[filename] = localUrl;
-        });
-        setMediaMapping(mapping);
-      } catch (err) {
-        console.error("Failed to load IndexedDB media:", err);
-      }
-    };
-    loadIndexedDBMedia();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const resolveMedia = useCallback((url?: string) => {
-    if (!url) return "";
-    if (url.startsWith("data:")) return url;
-
-    if (url.startsWith("blob:")) {
-      if (mediaMapping[url]) return mediaMapping[url];
-      if (url.includes("/uploads/")) {
-        const pathOnly = url.substring(url.indexOf("/uploads/"));
-        if (mediaMapping[pathOnly]) return mediaMapping[pathOnly];
-      }
-      if (url.includes("/backgrounds/")) {
-        const pathOnly = url.substring(url.indexOf("/backgrounds/"));
-        if (mediaMapping[pathOnly]) return mediaMapping[pathOnly];
-      }
-      const stripped = url.replace(/^blob:/, "");
-      if (stripped.startsWith("http://") || stripped.startsWith("https://")) {
-        url = stripped;
-      }
-    }
-
-    let processedUrl = url;
-
-    const pathOnly = url.includes("/uploads/")
-      ? url.substring(url.indexOf("/uploads/"))
-      : url.includes("/backgrounds/")
-      ? url.substring(url.indexOf("/backgrounds/"))
-      : url;
-
-    if (mediaMapping[pathOnly]) return mediaMapping[pathOnly];
-    const filename = pathOnly.split("/").pop();
-    if (filename && mediaMapping[filename]) return mediaMapping[filename];
-    if (mediaMapping[url]) return mediaMapping[url];
-
-    if (url.includes("/uploads/") || url.includes("/backgrounds/")) {
-      if (url.startsWith("/")) {
-        processedUrl = window.location.origin + url;
-      } else {
-        processedUrl = url;
-      }
-    } else if (url.startsWith("/") && !url.startsWith("//")) {
-      processedUrl = window.location.origin + url;
-    } else if (url.startsWith("http://localhost") || url.startsWith("http://127.0.0.1")) {
-      if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-        processedUrl = url;
-      } else {
-        try {
-          const parsed = new URL(url);
-          processedUrl = window.location.origin + parsed.pathname + parsed.search;
-        } catch {}
-      }
-    }
-
-    if (typeof window !== "undefined" && window.location.protocol === "https:" && processedUrl.startsWith("http://")) {
-      if (!processedUrl.startsWith("http://localhost") && !processedUrl.startsWith("http://127.0.0.1")) {
-        processedUrl = "https://" + processedUrl.substring(7);
-      }
-    }
-
-    return processedUrl;
-  }, [mediaMapping]);
-
   const [customBackgrounds, setCustomBackgrounds] = useState<string[]>(() => {
-    const saved = localStorage.getItem("cp_custom_bgs");
+    const saved =
+      getItemAccount("cp_custom_bgs", currentAccountId) ||
+      localStorage.getItem("cp_custom_bgs");
     if (!saved) return [];
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
         return parsed.filter(
-          (url) =>
-            typeof url === "string" &&
-            !url.startsWith("data:") &&
-            !url.startsWith("blob:"),
+          (url) => typeof url === "string" && !url.startsWith("blob:"),
         );
       }
     } catch (e) {}
@@ -616,21 +542,178 @@ export default function OperatorDashboard() {
   const [customVideoBackgrounds, setCustomVideoBackgrounds] = useState<
     string[]
   >(() => {
-    const saved = localStorage.getItem("cp_custom_video_bgs");
+    const saved =
+      getItemAccount("cp_custom_video_bgs", currentAccountId) ||
+      localStorage.getItem("cp_custom_video_bgs");
     if (!saved) return [];
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
         return parsed.filter(
-          (url) =>
-            typeof url === "string" &&
-            !url.startsWith("data:") &&
-            !url.startsWith("blob:"),
+          (url) => typeof url === "string" && !url.startsWith("blob:"),
         );
       }
     } catch (e) {}
     return [];
   });
+
+  useEffect(() => {
+    let active = true;
+    const loadIndexedDBMedia = async () => {
+      try {
+        const [list, savedBgs] = await Promise.all([
+          getAllMedia(),
+          getPersistentBackgrounds(currentAccountId),
+        ]);
+        if (!active) return;
+
+        const mapping: Record<string, string> = {};
+        const discoveredImages: string[] = [];
+        const discoveredVideos: string[] = [];
+
+        list.forEach((item) => {
+          try {
+            let localUrl = "";
+            if (item.file instanceof Blob && item.file.size > 0) {
+              localUrl = URL.createObjectURL(item.file);
+            } else if (item.dataUrl) {
+              localUrl = item.dataUrl;
+            }
+            if (!localUrl) return;
+
+            mapping[item.id] = localUrl;
+            const cleanPath = extractMediaPath(item.id);
+            if (cleanPath) {
+              mapping[cleanPath] = localUrl;
+              const filename = cleanPath.substring(
+                cleanPath.lastIndexOf("/") + 1,
+              );
+              if (filename) mapping[filename] = localUrl;
+
+              if (
+                cleanPath.startsWith("/local-media/") ||
+                cleanPath.startsWith("/uploads/")
+              ) {
+                const isVid =
+                  item.mediaKind === "video" ||
+                  item.type?.startsWith("video/") ||
+                  /\.(mp4|webm|ogg|mov|m4v)$/i.test(item.name || cleanPath);
+                if (isVid) {
+                  if (!discoveredVideos.includes(cleanPath)) {
+                    discoveredVideos.push(cleanPath);
+                  }
+                } else {
+                  if (!discoveredImages.includes(cleanPath)) {
+                    discoveredImages.push(cleanPath);
+                  }
+                }
+              }
+            }
+          } catch (itemErr) {
+            console.warn(
+              "Skipped malformed IndexedDB media item:",
+              item?.id,
+              itemErr,
+            );
+          }
+        });
+
+        setMediaMapping(mapping);
+
+        // Restore custom images and videos from IndexedDB & persistent storage so media never disappears
+        const mergedImages = Array.from(
+          new Set([...(savedBgs.images || []), ...discoveredImages]),
+        ).filter((u) => typeof u === "string" && !u.startsWith("blob:"));
+        const mergedVideos = Array.from(
+          new Set([...(savedBgs.videos || []), ...discoveredVideos]),
+        ).filter((u) => typeof u === "string" && !u.startsWith("blob:"));
+
+        if (mergedImages.length > 0) {
+          setCustomBackgrounds((prev) =>
+            Array.from(new Set([...prev, ...mergedImages])),
+          );
+        }
+        if (mergedVideos.length > 0) {
+          setCustomVideoBackgrounds((prev) =>
+            Array.from(new Set([...prev, ...mergedVideos])),
+          );
+        }
+      } catch (err) {
+        console.error("Failed to load IndexedDB media:", err);
+      }
+    };
+    loadIndexedDBMedia();
+    return () => {
+      active = false;
+    };
+  }, [currentAccountId, mediaUpdateTick]);
+
+  const resolveMedia = useCallback(
+    (url?: string) => {
+      if (!url) return "";
+      if (url.startsWith("data:")) return url;
+
+      const cleanPath = extractMediaPath(url);
+      if (mediaMapping[url]) return mediaMapping[url];
+      if (cleanPath && mediaMapping[cleanPath]) return mediaMapping[cleanPath];
+      const filename = cleanPath.split("/").pop();
+      if (filename && mediaMapping[filename]) return mediaMapping[filename];
+
+      if (url.startsWith("blob:")) {
+        const stripped = url.replace(/^blob:/, "");
+        if (stripped.startsWith("http://") || stripped.startsWith("https://")) {
+          url = stripped;
+        }
+      }
+
+      let processedUrl = url;
+
+      if (url.includes("/local-media/")) {
+        return cleanPath;
+      } else if (url.includes("/uploads/") || url.includes("/backgrounds/")) {
+        if (cleanPath.startsWith("/")) {
+          processedUrl = window.location.origin + cleanPath;
+        } else {
+          processedUrl = url;
+        }
+      } else if (url.startsWith("/") && !url.startsWith("//")) {
+        processedUrl = window.location.origin + url;
+      } else if (
+        url.startsWith("http://localhost") ||
+        url.startsWith("http://127.0.0.1")
+      ) {
+        if (
+          typeof window !== "undefined" &&
+          (window.location.hostname === "localhost" ||
+            window.location.hostname === "127.0.0.1")
+        ) {
+          processedUrl = url;
+        } else {
+          try {
+            const parsed = new URL(url);
+            processedUrl =
+              window.location.origin + parsed.pathname + parsed.search;
+          } catch {}
+        }
+      }
+
+      if (
+        typeof window !== "undefined" &&
+        window.location.protocol === "https:" &&
+        processedUrl.startsWith("http://")
+      ) {
+        if (
+          !processedUrl.startsWith("http://localhost") &&
+          !processedUrl.startsWith("http://127.0.0.1")
+        ) {
+          processedUrl = "https://" + processedUrl.substring(7);
+        }
+      }
+
+      return processedUrl;
+    },
+    [mediaMapping],
+  );
 
   const isVideo = (url?: string) => {
     if (!url) return false;
@@ -653,6 +736,8 @@ export default function OperatorDashboard() {
       cleanUrl.endsWith(".mp4") ||
       cleanUrl.endsWith(".webm") ||
       cleanUrl.endsWith(".ogg") ||
+      cleanUrl.endsWith(".mov") ||
+      cleanUrl.endsWith(".m4v") ||
       cleanUrl.includes(".mp4?") ||
       cleanUrl.includes(".webm?") ||
       cleanUrl.includes(".ogg?") ||
@@ -666,109 +751,105 @@ export default function OperatorDashboard() {
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    // Copy FileList before clearing input element
+    const files: File[] = Array.from(fileList);
+    if (bgFileInputRef.current) {
+      bgFileInputRef.current.value = "";
+    }
 
     try {
-      const formData = new FormData();
-      for (let i = 0; i < files.length; i++) {
-        formData.append("files", files[i]);
-      }
-
-      // Upload binary files to server in a single streamlined multipart/form-data request
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed matching status ${response.status}`);
-      }
-
-      const data = await response.json();
-      const urls: string[] = data.urls || [];
-
       const newImages: string[] = [];
       const newVideos: string[] = [];
+      const newMappings: Record<string, string> = {};
 
-      urls.forEach((url, index) => {
-        // Resolve to a fully qualified URL to avoid relative iframe path issues across projector screens
-        const fullUrl = url.startsWith("/")
-          ? `${window.location.origin}${url}`
-          : url;
-        const file = files[index];
-        
-        // Save to IndexedDB with various matchable keys
-        const cleanPath = fullUrl.startsWith("http") ? new URL(fullUrl).pathname : fullUrl;
-        const filename = fullUrl.substring(fullUrl.lastIndexOf("/") + 1);
-        saveMedia(cleanPath, file, file.name, file.type);
-        saveMedia(fullUrl, file, file.name, file.type);
-        saveMedia(filename, file, file.name, file.type);
-
-        const localUrl = URL.createObjectURL(file);
-        setMediaMapping((prev) => ({
-          ...prev,
-          [cleanPath]: localUrl,
-          [fullUrl]: localUrl,
-          [filename]: localUrl,
-        }));
-
+      for (const file of files) {
         const isVid =
           file.type.startsWith("video/") ||
-          file.name.toLowerCase().endsWith(".mp4") ||
-          file.name.toLowerCase().endsWith(".webm") ||
-          file.name.toLowerCase().endsWith(".ogg");
-        if (isVid) {
-          newVideos.push(fullUrl);
-        } else {
-          newImages.push(fullUrl);
+          /\.(mp4|webm|ogg|mov|m4v)$/i.test(file.name);
+
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const localPath = `/local-media/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${safeName}`;
+        const filename = localPath.substring(localPath.lastIndexOf("/") + 1);
+
+        // Convert File bytes into independent persistent Blob so browser never loses access
+        const persistentBlob = await toPersistentBlob(
+          file,
+          file.type || (isVid ? "video/mp4" : "image/jpeg"),
+        );
+
+        let dataUrl: string | undefined;
+        if (!isVid) {
+          dataUrl = await createCompressedImageDataUrl(persistentBlob, 1280, 0.8);
         }
-      });
+
+        await saveMedia(localPath, persistentBlob, file.name, persistentBlob.type, {
+          mediaKind: isVid ? "video" : "image",
+          dataUrl,
+        });
+
+        const localObjectUrl = URL.createObjectURL(persistentBlob);
+        newMappings[localPath] = localObjectUrl;
+        newMappings[filename] = localObjectUrl;
+
+        if (isVid) {
+          newVideos.push(localPath);
+        } else {
+          newImages.push(localPath);
+        }
+      }
+
+      if (Object.keys(newMappings).length > 0) {
+        setMediaMapping((prev) => ({ ...prev, ...newMappings }));
+      }
 
       let lastSelected = "";
+      let nextImages = customBackgrounds;
+      let nextVideos = customVideoBackgrounds;
 
       if (newImages.length > 0) {
-        const updatedImages = [...customBackgrounds, ...newImages];
-        setCustomBackgrounds(updatedImages);
-        try {
-          localStorage.setItem("cp_custom_bgs", JSON.stringify(updatedImages));
-        } catch (err) {
-          console.warn(
-            "Could not save all custom images to local storage:",
-            err,
-          );
-        }
+        nextImages = Array.from(new Set([...customBackgrounds, ...newImages]));
+        setCustomBackgrounds(nextImages);
         lastSelected = newImages[newImages.length - 1];
         setBgTab("images");
       }
 
       if (newVideos.length > 0) {
-        const updatedVideos = [...customVideoBackgrounds, ...newVideos];
-        setCustomVideoBackgrounds(updatedVideos);
-        try {
-          localStorage.setItem(
-            "cp_custom_video_bgs",
-            JSON.stringify(updatedVideos),
-          );
-        } catch (err) {
-          console.warn(
-            "Could not save all custom videos to local storage:",
-            err,
-          );
-        }
+        nextVideos = Array.from(
+          new Set([...customVideoBackgrounds, ...newVideos]),
+        );
+        setCustomVideoBackgrounds(nextVideos);
         lastSelected = newVideos[newVideos.length - 1];
         setBgTab("videos");
       }
 
+      await savePersistentBackgrounds(currentAccountId, nextImages, nextVideos);
+      notifyMediaUpdated();
+
       if (lastSelected) {
         setActiveBackground(lastSelected);
       }
-    } catch (err) {
-      console.error("Error uploading files to Express server:", err);
-    } finally {
-      if (bgFileInputRef.current) {
-        bgFileInputRef.current.value = "";
+
+      showToast(
+        `${files.length} media berhasil ditambahkan & disimpan permanen`,
+        "success",
+      );
+
+      // Optional non-blocking backup upload when Express backend is running locally
+      if (
+        typeof window !== "undefined" &&
+        !window.location.hostname.endsWith(".vercel.app") &&
+        !window.location.hostname.endsWith(".github.io")
+      ) {
+        const formData = new FormData();
+        files.forEach((f) => formData.append("files", f));
+        fetch("/api/upload", { method: "POST", body: formData }).catch(() => {});
       }
+    } catch (err) {
+      console.error("Error saving uploaded media:", err);
+      showToast("Gagal memproses file media", "warn");
     }
   };
 
@@ -969,6 +1050,30 @@ export default function OperatorDashboard() {
     const saved = localStorage.getItem("cp_settings_chroma_key_color");
     return saved || "transparent";
   });
+
+  useEffect(() => {
+    syncSettings({
+      outputResolution,
+      transitionDuration,
+      globalFontFamily,
+      globalTextTransform,
+      lowerThirdMode,
+      globalFontSizeScale,
+      globalTextShadowStyle,
+      chromaKeyColor,
+    });
+  }, [
+    syncSettings,
+    outputResolution,
+    transitionDuration,
+    globalFontFamily,
+    globalTextTransform,
+    lowerThirdMode,
+    globalFontSizeScale,
+    globalTextShadowStyle,
+    chromaKeyColor,
+  ]);
+
   const [isAutoPlay, setIsAutoPlay] = useState(false);
 
   // Real Action History states (Undo/Redo)
@@ -1875,6 +1980,11 @@ export default function OperatorDashboard() {
       if (e.key === "Escape") {
         e.preventDefault();
         setMasterOverride(null);
+        if (standbySlide.current) {
+          changeSlide(standbySlide.current);
+        } else if (previewSlide) {
+          changeSlide(previewSlide);
+        }
         showToast("Override Dimatikan - Live Teks Tampil", "success");
         return;
       }
@@ -2783,10 +2893,6 @@ export default function OperatorDashboard() {
     }
   }, [editorScripVersion, customBibles]);
 
-  // Active Account reference
-  const currentAccount = getActiveAccount();
-  const currentAccountId = currentAccount.id;
-
   // Library Songs State - retain edits permanently inside browser Local Storage per Account
   const [librarySongs, setLibrarySongs] = useState<Song[]>(() => {
     const saved = getItemAccount("cp_library_songs", currentAccountId);
@@ -2866,10 +2972,11 @@ export default function OperatorDashboard() {
         console.warn("IndexedDB presentations hydration error:", err);
       }
 
-      // 2. Fetch backend if available
+      // 2. Fetch backend if available (guard content-type against SPA index.html rewrites)
       try {
         const resSongs = await fetch(`/api/custom-songs?accountId=${currentAccountId}`);
-        if (resSongs.ok) {
+        const ctSongs = resSongs.headers.get("content-type") || "";
+        if (resSongs.ok && ctSongs.includes("application/json")) {
           const songs = await resSongs.json();
           if (Array.isArray(songs) && songs.length > 0) {
             setLibrarySongs((prev) => {
@@ -2893,7 +3000,8 @@ export default function OperatorDashboard() {
 
       try {
         const resBibles = await fetch(`/api/custom-bibles?accountId=${currentAccountId}`);
-        if (resBibles.ok) {
+        const ctBibles = resBibles.headers.get("content-type") || "";
+        if (resBibles.ok && ctBibles.includes("application/json")) {
           const bibles = await resBibles.json();
           if (Array.isArray(bibles) && bibles.length > 0) {
             setCustomBibles((prev) => {
@@ -2908,7 +3016,8 @@ export default function OperatorDashboard() {
       }
       try {
         const resLocalBibles = await fetch("/api/local-bibles");
-        if (resLocalBibles.ok) {
+        const ctLocal = resLocalBibles.headers.get("content-type") || "";
+        if (resLocalBibles.ok && ctLocal.includes("application/json")) {
           const localBibles = await resLocalBibles.json();
           if (Array.isArray(localBibles) && localBibles.length > 0) {
             setCustomBibles((prev) => {
@@ -2921,10 +3030,11 @@ export default function OperatorDashboard() {
       } catch (e) {
         // Backend not available
       }
-      
+
       try {
         const resBgs = await fetch("/api/local-backgrounds");
-        if (resBgs.ok) {
+        const ctBgs = resBgs.headers.get("content-type") || "";
+        if (resBgs.ok && ctBgs.includes("application/json")) {
           const bgs = await resBgs.json();
           if (bgs.images && Array.isArray(bgs.images)) {
             setCustomBackgrounds(prev => {
@@ -3295,7 +3405,8 @@ export default function OperatorDashboard() {
           const res = await fetch(
             `/api/custom-bibles/${encodeURIComponent(version)}/chapter?book=${encodeURIComponent(book)}&chapter=${chapter}`,
           );
-          if (!res.ok) {
+          const ct = res.headers.get("content-type") || "";
+          if (!res.ok || !ct.includes("application/json")) {
             throw new Error(
               `Pasal ${chapter} untuk kitab ${book} gagal diambil dari database server.`,
             );
@@ -3353,7 +3464,8 @@ export default function OperatorDashboard() {
           }),
         });
 
-        if (!res.ok) {
+        const ct = res.headers.get("content-type") || "";
+        if (!res.ok || !ct.includes("application/json")) {
           throw new Error(
             `Gagal memuat nats ${book} ${chapter} dari Web-service.`,
           );
@@ -3455,7 +3567,8 @@ export default function OperatorDashboard() {
           const res = await fetch(
             `/api/custom-bibles/${encodeURIComponent(version)}/chapter?book=${encodeURIComponent(book)}&chapter=${chapter}`,
           );
-          if (res.ok) {
+          const ct = res.headers.get("content-type") || "";
+          if (res.ok && ct.includes("application/json")) {
             const data = await res.json();
             verses = data.verses || [];
           }
@@ -3483,7 +3596,8 @@ export default function OperatorDashboard() {
           }),
         });
 
-        if (res.ok) {
+        const ct = res.headers.get("content-type") || "";
+        if (res.ok && ct.includes("application/json")) {
           const data = await res.json();
           if (Array.isArray(data) && data.length > 0) {
             setEditorScripPreviewList(
@@ -3863,7 +3977,9 @@ export default function OperatorDashboard() {
     setPreviewSlide(updatedSlide);
     standbySlide.current = updatedSlide;
 
-    if (isLive) {
+    // Only replace live output if NO masterOverride (logo/black/clear/qr) is active;
+    // when an override IS active, the activeBackground effect keeps override & Mobile Share synced.
+    if (isLive && !masterOverride) {
       changeSlide(updatedSlide);
     }
   };
@@ -5663,12 +5779,82 @@ export default function OperatorDashboard() {
             >
               {masterOverride === "logo" ||
               (isLive && currentSlide?.type === "logo") ? (
-                <div className="absolute inset-0 z-0 bg-black flex items-center justify-center p-2">
-                  <AppLogo
-                    className="w-16 h-16 drop-shadow-[0_4px_10px_rgba(59,130,246,0.3)]"
-                    showText={false}
-                  />
-                </div>
+                <>
+                  {!lowerThirdMode &&
+                    (() => {
+                      const logoBg =
+                        currentSlide?.type === "logo"
+                          ? currentSlide?.backgroundOverride ||
+                            currentSlide?.background ||
+                            activeBackground
+                          : activeBackground;
+                      if (!logoBg || logoBg === "#000000" || logoBg === "transparent") return null;
+                      return isVideo(logoBg) ? (
+                        <video
+                          key={logoBg}
+                          src={resolveMedia(logoBg)}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                          className="absolute inset-0 w-full h-full object-cover opacity-85 brightness-[0.8] z-0"
+                        />
+                      ) : (
+                        <img
+                          key={logoBg}
+                          src={resolveMedia(logoBg)}
+                          alt="bg"
+                          className="absolute inset-0 w-full h-full object-cover opacity-85 brightness-80 z-0"
+                          referrerPolicy="no-referrer"
+                        />
+                      );
+                    })()}
+                  {!lowerThirdMode && (
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30 pointer-events-none z-[1]" />
+                  )}
+                  <div className="absolute inset-0 z-10 flex items-center justify-center p-2 pointer-events-none">
+                    <AppLogo
+                      className="w-20 h-20 drop-shadow-[0_6px_18px_rgba(0,0,0,0.85)]"
+                      showText={false}
+                    />
+                  </div>
+                </>
+              ) : masterOverride === "qr" ||
+                (isLive && currentSlide?.type === "qr") ? (
+                <>
+                  {!lowerThirdMode &&
+                    activeBackground &&
+                    (isVideo(activeBackground) ? (
+                      <video
+                        key={activeBackground}
+                        src={resolveMedia(activeBackground)}
+                        muted
+                        autoPlay
+                        loop
+                        playsInline
+                        className="absolute inset-0 w-full h-full object-cover opacity-85 brightness-[0.8] z-0"
+                      />
+                    ) : (
+                      <img
+                        key={activeBackground}
+                        src={resolveMedia(activeBackground)}
+                        alt="bg"
+                        className="absolute inset-0 w-full h-full object-cover opacity-85 brightness-80 z-0"
+                        referrerPolicy="no-referrer"
+                      />
+                    ))}
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-2 pointer-events-none">
+                    <div className="bg-white p-1.5 rounded shadow-md mb-1">
+                      <QRCodeSVG
+                        value={getPublicUrl(`/projector?mode=share&account=${currentAccountId}`)}
+                        size={52}
+                      />
+                    </div>
+                    <p className="text-[7px] font-semibold text-white/85">
+                      Scan QR Code
+                    </p>
+                  </div>
+                </>
               ) : masterOverride === "black" ||
                 (isLive &&
                   currentSlide?.content === "" &&
@@ -5678,12 +5864,15 @@ export default function OperatorDashboard() {
               ) : masterOverride === "clear" ||
                 (isLive &&
                   !currentSlide?.content &&
+                  !currentSlide?.title &&
+                  currentSlide?.type === "announcement" &&
                   currentSlide?.background) ? (
                 <>
                   {!lowerThirdMode &&
                     activeBackground &&
                     (isVideo(activeBackground) ? (
                       <video
+                        key={activeBackground}
                         src={resolveMedia(activeBackground)}
                         muted
                         autoPlay
@@ -5693,6 +5882,7 @@ export default function OperatorDashboard() {
                       />
                     ) : (
                       <img
+                        key={activeBackground}
                         src={resolveMedia(activeBackground)}
                         alt="bg"
                         className="absolute inset-0 w-full h-full object-cover opacity-85 brightness-80"
@@ -6041,7 +6231,7 @@ export default function OperatorDashboard() {
                         {slide.logoLeftUrl && (
                           <div className="absolute top-2 left-2 z-[15] pointer-events-none">
                             <img
-                              src={slide.logoLeftUrl}
+                              src={resolveMedia(slide.logoLeftUrl)}
                               alt="Left Logo"
                               className="w-10 h-10 object-contain rounded-md drop-shadow"
                               referrerPolicy="no-referrer"
@@ -6051,7 +6241,7 @@ export default function OperatorDashboard() {
                         {slide.logoRightUrl && (
                           <div className="absolute top-2 right-2 z-[15] pointer-events-none">
                             <img
-                              src={slide.logoRightUrl}
+                              src={resolveMedia(slide.logoRightUrl)}
                               alt="Right Logo"
                               className="w-10 h-10 object-contain rounded-md drop-shadow"
                               referrerPolicy="no-referrer"
@@ -6065,7 +6255,7 @@ export default function OperatorDashboard() {
                               className={`absolute top-2 z-[15] pointer-events-none ${slide.logoPosition === "left" ? "left-2" : "right-2"}`}
                             >
                               <img
-                                src={slide.logoUrl}
+                                src={resolveMedia(slide.logoUrl)}
                                 alt="Slide Logo"
                                 className="w-10 h-10 object-contain rounded-md drop-shadow"
                                 referrerPolicy="no-referrer"
@@ -6935,7 +7125,7 @@ export default function OperatorDashboard() {
                                 >
                                   {media.type === "image" && (
                                     <img
-                                      src={media.url}
+                                      src={resolveMedia(media.url)}
                                       className="absolute inset-0 w-full h-full object-cover opacity-60 pointer-events-none"
                                       referrerPolicy="no-referrer"
                                       alt=""
@@ -7478,7 +7668,7 @@ export default function OperatorDashboard() {
                                       }`}
                                     >
                                       <img
-                                        src={bg}
+                                        src={resolveMedia(bg)}
                                         alt={`Media ${idx}`}
                                         className="w-full h-full object-cover"
                                         referrerPolicy="no-referrer"
@@ -8603,7 +8793,7 @@ export default function OperatorDashboard() {
                                   >
                                     {media.type === "image" && (
                                       <img
-                                        src={media.url}
+                                        src={resolveMedia(media.url)}
                                         className="absolute inset-0 w-full h-full object-cover opacity-60 pointer-events-none"
                                         referrerPolicy="no-referrer"
                                         alt=""
@@ -9303,7 +9493,7 @@ export default function OperatorDashboard() {
                                         }`}
                                       >
                                         <img
-                                          src={bg}
+                                          src={resolveMedia(bg)}
                                           alt={`Media ${idx}`}
                                           className="w-full h-full object-cover"
                                           referrerPolicy="no-referrer"
@@ -10062,7 +10252,7 @@ export default function OperatorDashboard() {
                             {editingItem.logoLeftUrl && (
                               <div className="absolute top-4 left-4 z-[15] pointer-events-none">
                                 <img
-                                  src={editingItem.logoLeftUrl}
+                                  src={resolveMedia(editingItem.logoLeftUrl)}
                                   alt="Left Logo"
                                   className="w-14 h-14 object-contain rounded-md drop-shadow"
                                   referrerPolicy="no-referrer"
@@ -10072,7 +10262,7 @@ export default function OperatorDashboard() {
                             {editingItem.logoRightUrl && (
                               <div className="absolute top-4 right-4 z-[15] pointer-events-none">
                                 <img
-                                  src={editingItem.logoRightUrl}
+                                  src={resolveMedia(editingItem.logoRightUrl)}
                                   alt="Right Logo"
                                   className="w-14 h-14 object-contain rounded-md drop-shadow"
                                   referrerPolicy="no-referrer"
@@ -10086,7 +10276,7 @@ export default function OperatorDashboard() {
                                   className={`absolute top-4 z-[15] pointer-events-none ${editingItem.logoPosition === "left" ? "left-4" : "right-4"}`}
                                 >
                                   <img
-                                    src={editingItem.logoUrl}
+                                    src={resolveMedia(editingItem.logoUrl)}
                                     alt="Slide Logo"
                                     className="w-14 h-14 object-contain rounded-md drop-shadow"
                                     referrerPolicy="no-referrer"
@@ -11911,6 +12101,17 @@ export default function OperatorDashboard() {
                       (parseInt(prev) + 1).toString(),
                     );
 
+                    syncSettings({
+                      outputResolution,
+                      transitionDuration,
+                      globalFontFamily,
+                      globalTextTransform,
+                      lowerThirdMode,
+                      globalFontSizeScale,
+                      globalTextShadowStyle,
+                      chromaKeyColor,
+                    });
+
                     setShowSettingsModal(false);
                     showToast("Pengaturan sistem & sinkronisasi berhasil disimpan.", "success");
                   }}
@@ -12533,22 +12734,24 @@ export default function OperatorDashboard() {
                                 </button>
                                 <button
                                   onClick={() => {
+                                    let nextImgs = customBackgrounds;
+                                    let nextVids = customVideoBackgrounds;
                                     if (isVid) {
-                                      setCustomVideoBackgrounds((prev) =>
-                                        prev.filter((item) => item !== bg),
-                                      );
+                                      nextVids = customVideoBackgrounds.filter((item) => item !== bg);
+                                      setCustomVideoBackgrounds(nextVids);
                                     } else {
-                                      setCustomBackgrounds((prev) =>
-                                        prev.filter((item) => item !== bg),
-                                      );
+                                      nextImgs = customBackgrounds.filter((item) => item !== bg);
+                                      setCustomBackgrounds(nextImgs);
                                     }
-                                    
+
+                                    savePersistentBackgrounds(currentAccountId, nextImgs, nextVids);
+
                                     // Clean up from IndexedDB
                                     deleteMedia(bg);
-                                    const cleanPath = bg.startsWith("http") ? new URL(bg).pathname : bg;
-                                    deleteMedia(cleanPath);
+                                    const cleanPath = extractMediaPath(bg);
+                                    if (cleanPath) deleteMedia(cleanPath);
                                     const filename = bg.substring(bg.lastIndexOf("/") + 1);
-                                    deleteMedia(filename);
+                                    if (filename) deleteMedia(filename);
 
                                     showToast("Media berhasil dihapus", "info");
                                   }}
@@ -13268,11 +13471,22 @@ Haleluya pujilah Dia...`}
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ text: rawTextPaste }),
                             });
+                            const ct = res.headers.get("content-type") || "";
                             if (!res.ok) {
-                              const errData = await res.json();
+                              if (ct.includes("application/json")) {
+                                const errData = await res.json();
+                                throw new Error(
+                                  errData.error ||
+                                    "Gagal merapikan lirik dengan AI.",
+                                );
+                              }
                               throw new Error(
-                                errData.error ||
-                                  "Gagal merapikan lirik dengan AI.",
+                                "Layanan AI server tidak tersedia di mode statis.",
+                              );
+                            }
+                            if (!ct.includes("application/json")) {
+                              throw new Error(
+                                "Layanan AI server tidak tersedia di mode statis.",
                               );
                             }
                             const parsedSongs = await res.json();

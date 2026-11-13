@@ -1,11 +1,19 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { Slide, Shift } from "../types";
 import { getActiveAccountId, getItemAccount, setItemAccount } from "../lib/accountManager";
+import {
+  CloudSyncClient,
+  SyncedSettings,
+  getSyncRoomId,
+} from "../lib/cloudSync";
 
-function cleanUrlForBroadcast(url?: string): string | undefined {
+export function cleanUrlForBroadcast(url?: string): string | undefined {
   if (!url) return url;
   if (url.startsWith("blob:")) {
+    if (url.includes("/local-media/")) {
+      return url.substring(url.indexOf("/local-media/"));
+    }
     if (url.includes("/uploads/")) {
       return url.substring(url.indexOf("/uploads/"));
     }
@@ -14,8 +22,19 @@ function cleanUrlForBroadcast(url?: string): string | undefined {
     }
     const stripped = url.replace(/^blob:/, "");
     if (stripped.startsWith("http://") || stripped.startsWith("https://")) {
-      return stripped;
+      url = stripped;
+    } else {
+      return url;
     }
+  }
+  if (url.includes("/local-media/")) {
+    return url.substring(url.indexOf("/local-media/"));
+  }
+  if (url.includes("/uploads/")) {
+    return url.substring(url.indexOf("/uploads/"));
+  }
+  if (url.includes("/backgrounds/")) {
+    return url.substring(url.indexOf("/backgrounds/"));
   }
   return url;
 }
@@ -43,12 +62,24 @@ export const useSocket = (explicitAccountId?: string) => {
     return getActiveAccountId();
   }, [explicitAccountId]);
 
+  const syncRoomId = useMemo(() => getSyncRoomId(targetAccountId), [targetAccountId]);
+  const isOperatorContext = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return !window.location.pathname.includes("/projector");
+  }, []);
+
   const [socket, setSocket] = useState<Socket | null>(null);
   const [clientCount, setClientCount] = useState(0);
+  const [mediaUpdateTick, setMediaUpdateTick] = useState(0);
+  const cloudRef = useRef<CloudSyncClient | null>(null);
 
   const [currentSlide, setCurrentSlide] = useState<Slide | null>(() => {
-    const saved = getItemAccount("cp_current_slide", targetAccountId);
-    return saved ? cleanSlideForBroadcast(JSON.parse(saved)) : null;
+    try {
+      const saved = getItemAccount("cp_current_slide", targetAccountId);
+      return saved ? cleanSlideForBroadcast(JSON.parse(saved)) : null;
+    } catch {
+      return null;
+    }
   });
 
   const [currentShift, setCurrentShift] = useState<Shift>(() => {
@@ -57,6 +88,15 @@ export const useSocket = (explicitAccountId?: string) => {
       return saved ? JSON.parse(saved) : { active: false, name: "", endTime: "" };
     } catch {
       return { active: false, name: "", endTime: "" };
+    }
+  });
+
+  const [syncedSettings, setSyncedSettings] = useState<SyncedSettings | null>(() => {
+    try {
+      const saved = getItemAccount("cp_synced_settings", targetAccountId);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
     }
   });
 
@@ -78,52 +118,105 @@ export const useSocket = (explicitAccountId?: string) => {
     return undefined;
   }, []);
 
-  useEffect(() => {
-    const newSocket = io(targetServerUrl || undefined, {
-      transports: ["websocket", "polling"],
-      reconnectionAttempts: 8,
-      reconnectionDelay: 2000,
-      timeout: 10000,
-      autoConnect: true,
+  const applyIncomingSlide = useCallback((slide: Slide) => {
+    const cleaned = cleanSlideForBroadcast(slide);
+    setCurrentSlide((prev) => {
+      if (prev && JSON.stringify(prev) === JSON.stringify(cleaned)) {
+        return prev;
+      }
+      return cleaned;
     });
-    setSocket(newSocket);
-
-    newSocket.on("connect", () => {
-      newSocket.emit("join:account", { accountId: targetAccountId });
-    });
-
-    newSocket.on("connect_error", (err) => {
-      // Graceful fallback warning
-      console.warn("Socket connect_error (falling back to local/cloud sync):", err.message);
-    });
-
-    // Listen for socket updates
-    newSocket.on("slide:update", (slide: Slide) => {
-      const cleaned = cleanSlideForBroadcast(slide);
-      setCurrentSlide((prev) => {
-        if (prev && JSON.stringify(prev) === JSON.stringify(cleaned)) {
-          return prev;
-        }
-        return cleaned;
-      });
+    try {
       setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
-    });
+    } catch {}
+  }, [targetAccountId]);
 
-    newSocket.on("shift:update", (shift: Shift) => {
-      setCurrentShift((prev) => {
-        if (prev && JSON.stringify(prev) === JSON.stringify(shift)) {
-          return prev;
-        }
-        return shift;
-      });
+  const applyIncomingShift = useCallback((shift: Shift) => {
+    setCurrentShift((prev) => {
+      if (prev && JSON.stringify(prev) === JSON.stringify(shift)) {
+        return prev;
+      }
+      return shift;
+    });
+    try {
       setItemAccount("cp_current_shift", JSON.stringify(shift), targetAccountId);
-    });
+    } catch {}
+  }, [targetAccountId]);
 
-    newSocket.on("clients:count", (count: number) => {
-      setClientCount(count);
+  const applyIncomingSettings = useCallback((settings: SyncedSettings) => {
+    setSyncedSettings((prev) => {
+      if (prev && JSON.stringify(prev) === JSON.stringify(settings)) {
+        return prev;
+      }
+      return settings;
     });
+    try {
+      setItemAccount("cp_synced_settings", JSON.stringify(settings), targetAccountId);
+      if (settings.outputResolution) localStorage.setItem("cp_settings_output_resolution", settings.outputResolution);
+      if (settings.transitionDuration !== undefined) localStorage.setItem("cp_settings_transition_duration", String(settings.transitionDuration));
+      if (settings.globalFontFamily) localStorage.setItem("cp_settings_font_family", settings.globalFontFamily);
+      if (settings.globalTextTransform) localStorage.setItem("cp_settings_text_transform", settings.globalTextTransform);
+      if (settings.lowerThirdMode !== undefined) localStorage.setItem("cp_settings_lower_third_mode", String(settings.lowerThirdMode));
+      if (settings.globalFontSizeScale !== undefined) localStorage.setItem("cp_settings_font_size_scale", String(settings.globalFontSizeScale));
+      if (settings.globalTextShadowStyle) localStorage.setItem("cp_settings_text_shadow_style", settings.globalTextShadowStyle);
+      if (settings.chromaKeyColor) localStorage.setItem("cp_settings_chroma_key_color", settings.chromaKeyColor);
+    } catch {}
+  }, [targetAccountId]);
 
-    // Cross-tab / Cross-window storage event fallback synchronization
+  useEffect(() => {
+    // 1. Serverless Cloud Sync (MQTT over WSS + WebRTC Media Transfer) — works everywhere including Vercel & Mobile Share
+    const cloud = new CloudSyncClient(syncRoomId, isOperatorContext, {
+      onSlide: (slide) => applyIncomingSlide(slide),
+      onShift: (shift) => applyIncomingShift(shift),
+      onSettings: (settings) => applyIncomingSettings(settings),
+      onMediaReceived: () => {
+        setMediaUpdateTick((t) => t + 1);
+      },
+    });
+    cloudRef.current = cloud;
+
+    // 2. Socket.io (active when Express backend exists locally or on custom server URL)
+    const shouldTrySocketIo =
+      Boolean(targetServerUrl) ||
+      (typeof window !== "undefined" &&
+        !window.location.hostname.endsWith(".vercel.app") &&
+        !window.location.hostname.endsWith(".github.io"));
+
+    let newSocket: Socket | null = null;
+    if (shouldTrySocketIo) {
+      newSocket = io(targetServerUrl || undefined, {
+        transports: ["websocket", "polling"],
+        reconnectionAttempts: 5,
+        reconnectionDelay: 2000,
+        timeout: 8000,
+        autoConnect: true,
+      });
+      setSocket(newSocket);
+
+      newSocket.on("connect", () => {
+        newSocket?.emit("join:account", { accountId: targetAccountId });
+      });
+
+      newSocket.on("connect_error", () => {
+        // Silent graceful fallback to CloudSync & BroadcastChannel
+      });
+
+      newSocket.on("slide:update", (slide: Slide) => {
+        applyIncomingSlide(slide);
+      });
+
+      newSocket.on("shift:update", (shift: Shift) => {
+        applyIncomingShift(shift);
+      });
+
+      newSocket.on("clients:count", (count: number) => {
+        setClientCount(count);
+      });
+    } else {
+      setSocket(null);
+    }
+
+    // 3. Cross-tab / Cross-window storage event fallback synchronization
     const handleStorage = (e: StorageEvent) => {
       if (!e.newValue) return;
       if (
@@ -131,16 +224,18 @@ export const useSocket = (explicitAccountId?: string) => {
         (targetAccountId === "acc_default" && e.key === "cp_current_slide")
       ) {
         try {
-          const parsed = cleanSlideForBroadcast(JSON.parse(e.newValue));
-          setCurrentSlide(parsed);
+          applyIncomingSlide(JSON.parse(e.newValue));
         } catch {}
       } else if (
         e.key === `cp_current_shift_${targetAccountId}` ||
         (targetAccountId === "acc_default" && e.key === "cp_current_shift")
       ) {
         try {
-          const parsed = JSON.parse(e.newValue);
-          setCurrentShift(parsed);
+          applyIncomingShift(JSON.parse(e.newValue));
+        } catch {}
+      } else if (e.key === `cp_synced_settings_${targetAccountId}`) {
+        try {
+          applyIncomingSettings(JSON.parse(e.newValue));
         } catch {}
       }
     };
@@ -148,36 +243,29 @@ export const useSocket = (explicitAccountId?: string) => {
       window.addEventListener("storage", handleStorage);
     }
 
-    // Create a broadcast channel specific to this account
+    // 4. BroadcastChannel same-origin cross-window sync (Extended Display / Projector tab)
     let channel: BroadcastChannel | null = null;
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
       channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
 
       const handleBroadcast = (event: MessageEvent) => {
         if (event.data?.type === "slide:update") {
-          const cleaned = cleanSlideForBroadcast(event.data.slide);
-          setCurrentSlide((prev) => {
-            if (prev && JSON.stringify(prev) === JSON.stringify(cleaned)) {
-              return prev;
-            }
-            return cleaned;
-          });
-          setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
+          applyIncomingSlide(event.data.slide);
         } else if (event.data?.type === "shift:update") {
-          setCurrentShift((prev) => {
-            if (prev && JSON.stringify(prev) === JSON.stringify(event.data.shift)) {
-              return prev;
-            }
-            return event.data.shift;
-          });
-          setItemAccount("cp_current_shift", JSON.stringify(event.data.shift), targetAccountId);
+          applyIncomingShift(event.data.shift);
+        } else if (event.data?.type === "settings:update") {
+          applyIncomingSettings(event.data.settings);
+        } else if (event.data?.type === "media:updated") {
+          setMediaUpdateTick((t) => t + 1);
         }
       };
 
       channel.addEventListener("message", handleBroadcast);
 
       return () => {
-        newSocket.disconnect();
+        cloud.destroy();
+        cloudRef.current = null;
+        newSocket?.disconnect();
         window.removeEventListener("storage", handleStorage);
         channel?.removeEventListener("message", handleBroadcast);
         channel?.close();
@@ -185,53 +273,105 @@ export const useSocket = (explicitAccountId?: string) => {
     }
 
     return () => {
-      newSocket.disconnect();
+      cloud.destroy();
+      cloudRef.current = null;
+      newSocket?.disconnect();
       if (typeof window !== "undefined") {
         window.removeEventListener("storage", handleStorage);
       }
     };
-  }, [targetAccountId, targetServerUrl]);
+  }, [targetAccountId, targetServerUrl, syncRoomId, isOperatorContext, applyIncomingSlide, applyIncomingShift, applyIncomingSettings]);
 
   const changeSlide = useCallback((slide: Slide) => {
     const cleaned = cleanSlideForBroadcast(slide);
-    // 1. Update local state & storage for this account
     setCurrentSlide(cleaned);
-    setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
+    try {
+      setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
+    } catch {}
 
-    // 2. Broadcast to other tabs on same account
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
       const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
       channel.postMessage({ type: "slide:update", slide: cleaned });
       channel.close();
     }
 
-    // 3. Send to server for remote clients on this account room
-    if (socket) {
+    if (socket?.connected) {
       socket.emit("slide:change", { accountId: targetAccountId, slide: cleaned });
     }
+
+    cloudRef.current?.publishSlide(cleaned);
   }, [socket, targetAccountId]);
 
   const updateShift = useCallback((shift: Shift) => {
-    // 1. Update local state & storage for this account
     setCurrentShift(shift);
-    setItemAccount("cp_current_shift", JSON.stringify(shift), targetAccountId);
+    try {
+      setItemAccount("cp_current_shift", JSON.stringify(shift), targetAccountId);
+    } catch {}
 
-    // 2. Broadcast to other tabs on same account
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
       const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
       channel.postMessage({ type: "shift:update", shift });
       channel.close();
     }
 
-    // 3. Send to server for remote clients
-    if (socket) {
+    if (socket?.connected) {
       socket.emit("shift:change", { accountId: targetAccountId, shift });
     }
+
+    cloudRef.current?.publishShift(shift);
   }, [socket, targetAccountId]);
 
+  const syncSettings = useCallback((settings: SyncedSettings) => {
+    applyIncomingSettings(settings);
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
+      channel.postMessage({ type: "settings:update", settings });
+      channel.close();
+    }
+    cloudRef.current?.publishSettings(settings);
+  }, [targetAccountId, applyIncomingSettings]);
+
+  const requestCloudMedia = useCallback((url: string) => {
+    cloudRef.current?.requestMediaTransfer(url);
+  }, []);
+
+  const notifyMediaUpdated = useCallback(() => {
+    setMediaUpdateTick((t) => t + 1);
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
+      channel.postMessage({ type: "media:updated" });
+      channel.close();
+    }
+  }, [targetAccountId]);
+
   return useMemo(
-    () => ({ socket, currentSlide, changeSlide, clientCount, currentShift, updateShift, accountId: targetAccountId }),
-    [socket, currentSlide, changeSlide, clientCount, currentShift, updateShift, targetAccountId]
+    () => ({
+      socket,
+      currentSlide,
+      changeSlide,
+      clientCount,
+      currentShift,
+      updateShift,
+      accountId: targetAccountId,
+      syncedSettings,
+      syncSettings,
+      mediaUpdateTick,
+      requestCloudMedia,
+      notifyMediaUpdated,
+    }),
+    [
+      socket,
+      currentSlide,
+      changeSlide,
+      clientCount,
+      currentShift,
+      updateShift,
+      targetAccountId,
+      syncedSettings,
+      syncSettings,
+      mediaUpdateTick,
+      requestCloudMedia,
+      notifyMediaUpdated,
+    ]
   );
 };
-

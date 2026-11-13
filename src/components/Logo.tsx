@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 // @ts-ignore
 import logoUrl from '../assets/images/Logo_2.jpeg';
 
@@ -11,10 +11,17 @@ export const AppLogo = ({
   showText?: boolean; 
   bgWhiteSquare?: boolean; 
 }) => {
+  const [src, setSrc] = useState<string>(logoUrl || "/logo.jpeg");
+
   const content = (
     <img
-      src={logoUrl}
+      src={src}
       alt="Church Presenter Logo"
+      onError={() => {
+        if (src !== "/logo.jpeg") {
+          setSrc("/logo.jpeg");
+        }
+      }}
       className="w-full h-full object-contain rounded-lg"
       referrerPolicy="no-referrer"
     />
@@ -34,3 +41,4 @@ export const AppLogo = ({
     </div>
   );
 };
+
