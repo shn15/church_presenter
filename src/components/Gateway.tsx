@@ -194,21 +194,20 @@ export default function Gateway() {
   };
 
   return (
-    <div className="min-h-screen bg-[#070709] text-gray-200 flex flex-col justify-between p-6 select-none relative overflow-hidden">
-      {/* Decorative Blur Spheres (Strict Blue, Green, Red) */}
-      <div className="absolute top-[-10%] left-[-10%] w-[45%] h-[45%] rounded-full bg-blue-600/15 blur-[120px] pointer-events-none" />
-      <div className="absolute top-[30%] right-[-10%] w-[45%] h-[45%] rounded-full bg-green-600/10 blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] left-[30%] w-[45%] h-[45%] rounded-full bg-red-600/15 blur-[120px] pointer-events-none" />
+    <div className="min-h-screen bg-[#07080B] text-slate-200 flex flex-col justify-between p-6 select-none relative overflow-hidden">
+      {/* Subtle Futuristic Architectural Grid & Single Calm Radial Depth */}
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:48px_48px] pointer-events-none" />
+      <div className="absolute top-[-15%] left-1/2 -translate-x-1/2 w-[60%] h-[45%] rounded-full bg-sky-500/[0.06] blur-[140px] pointer-events-none" />
 
       {/* Header / Logo */}
       <header className="w-full max-w-7xl mx-auto flex justify-between items-center z-10 py-4">
         <div className="flex items-center space-x-3">
           <AppLogo className="w-10 h-10" showText={false} bgWhiteSquare={true} />
           <div className="text-left hidden sm:block">
-            <span className="font-mono text-[9px] font-black tracking-[0.25em] text-blue-500 uppercase">
+            <span className="font-mono text-[9px] font-bold tracking-[0.25em] text-sky-400/90 uppercase">
               System Gateway
             </span>
-            <h1 className="text-sm font-black text-white tracking-widest uppercase -mt-0.5">
+            <h1 className="text-sm font-black text-slate-100 tracking-widest uppercase -mt-0.5">
               Church Presenter
             </h1>
           </div>
@@ -216,12 +215,12 @@ export default function Gateway() {
         
         {/* Active Account Header Badge */}
         <div className="flex items-center gap-2">
-          <div className="px-3.5 py-1.5 bg-blue-950/60 border border-blue-500/30 rounded-full text-[10px] font-black text-blue-300 flex items-center gap-2 shadow-sm">
-            <Building2 className="w-3.5 h-3.5 text-green-400" />
+          <div className="px-3.5 py-1.5 bg-white/[0.04] border border-white/[0.09] rounded-xl text-[10px] font-bold text-slate-200 flex items-center gap-2 backdrop-blur-md">
+            <Building2 className="w-3.5 h-3.5 text-sky-400" />
             <span className="max-w-[140px] sm:max-w-[200px] truncate">{activeAccount.name}</span>
-            <span className="text-[9px] text-blue-400/80 font-mono">@{activeAccount.username}</span>
+            <span className="text-[9px] text-slate-400 font-mono">@{activeAccount.username}</span>
           </div>
-          <div className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[9px] font-bold text-gray-400 uppercase tracking-widest hidden md:block">
+          <div className="px-3 py-1.5 bg-white/[0.03] border border-white/[0.07] rounded-xl text-[9px] font-semibold text-slate-400 uppercase tracking-widest hidden md:block">
             Multi-User v7v2.5
           </div>
         </div>
@@ -231,14 +230,14 @@ export default function Gateway() {
       <main className="w-full max-w-5xl mx-auto my-auto py-6 z-10 flex flex-col items-center justify-center">
         {/* Animated Headline */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
           className="text-center mb-8"
         >
-          <h2 className="text-2xl md:text-4xl font-black text-white tracking-tight leading-none mb-3 uppercase">
+          <h2 className="text-2xl md:text-4xl font-black text-slate-50 tracking-tight leading-none mb-3 uppercase">
             Sistem Presentasi Gereja
           </h2>
-          <p className="text-xs md:text-sm text-gray-400 max-w-xl mx-auto leading-relaxed font-mono font-normal no-underline">
+          <p className="text-xs md:text-sm text-slate-400 max-w-xl mx-auto leading-relaxed font-mono font-normal no-underline">
             Sistem dimuat per akun. Lagu, Alkitab, jadwal ibadah, dan proyektor akun tidak akan saling tercampur dengan akun lainnya.
           </p>
         </motion.div>
@@ -247,19 +246,19 @@ export default function Gateway() {
         <div className="w-full max-w-md mx-auto">
           {/* Card: Login Operator & Gateway */}
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className={`relative bg-[#111118]/90 backdrop-blur-md rounded-2xl border ${
+            transition={{ delay: 0.08 }}
+            className={`relative bg-[#0D1017]/90 backdrop-blur-xl rounded-2xl border ${
               showPinForm
-                ? "border-blue-500/60 shadow-xl shadow-blue-500/10"
-                : "border-blue-500/25 hover:border-blue-500/40 hover:bg-[#141422]"
-            } p-7 transition-all flex flex-col justify-between overflow-hidden group min-h-[400px] shadow-2xl`}
+                ? "border-sky-400/40 shadow-[0_24px_60px_rgba(0,0,0,0.65)]"
+                : "border-white/[0.09] hover:border-sky-400/30 hover:bg-[#0F131C]/95"
+            } p-7 transition-all flex flex-col justify-between overflow-hidden group min-h-[400px] shadow-[0_20px_50px_rgba(0,0,0,0.6)]`}
           >
-            {/* Background Glow */}
+            {/* Subtle Ambient Corner Sheen */}
             <div
-              className={`absolute top-0 right-0 w-40 h-40 rounded-full filter blur-[60px] opacity-25 pointer-events-none transition-all ${
-                showPinForm ? "bg-blue-600" : "bg-blue-500"
+              className={`absolute -top-12 -right-12 w-44 h-44 rounded-full filter blur-[70px] opacity-15 pointer-events-none transition-all ${
+                showPinForm ? "bg-sky-400" : "bg-sky-500"
               }`}
             />
 
@@ -267,45 +266,45 @@ export default function Gateway() {
               {!showPinForm ? (
                 <motion.div
                   key="info"
-                  initial={{ opacity: 0, scale: 0.95 }}
+                  initial={{ opacity: 0, scale: 0.97 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
+                  exit={{ opacity: 0, scale: 0.97 }}
                   transition={{ duration: 0.15 }}
                   className="h-full flex flex-col justify-between text-left"
                 >
                   <div>
-                    <div className="w-12 h-12 rounded-xl bg-[#2880ff] flex items-center justify-center mb-5 border border-blue-500/30 shadow-lg shadow-blue-600/20">
-                      <Sliders className="w-6 h-6 text-white" />
+                    <div className="w-12 h-12 rounded-xl bg-sky-500/10 flex items-center justify-center mb-5 border border-sky-400/25">
+                      <Sliders className="w-5 h-5 text-sky-400" />
                     </div>
                     <div className="flex items-center space-x-2">
-                      <h3 className="text-xl font-bold text-white uppercase tracking-tight">
+                      <h3 className="text-xl font-bold text-slate-50 uppercase tracking-tight">
                         Login Operator
                       </h3>
-                      <span className="p-1 bg-blue-500/10 border border-blue-500/30 rounded text-[8px] text-blue-400 font-extrabold flex items-center gap-1 uppercase tracking-wider">
-                        <Lock className="w-2 h-2" /> Protected
+                      <span className="px-2 py-0.5 bg-white/[0.04] border border-white/[0.1] rounded-md text-[8px] text-slate-300 font-bold flex items-center gap-1 uppercase tracking-wider">
+                        <Lock className="w-2.5 h-2.5 text-sky-400" /> Protected
                       </span>
                     </div>
 
-                    <div className="mt-3.5 p-3.5 bg-blue-950/40 border border-blue-500/30 rounded-xl shadow-inner">
+                    <div className="mt-4 p-3.5 bg-white/[0.03] border border-white/[0.08] rounded-xl">
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black text-blue-400 uppercase tracking-wider">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                           Akun Operator Aktif:
                         </span>
-                        <span className="text-[8px] font-black px-1.5 py-0.5 bg-blue-500/25 text-blue-200 rounded uppercase border border-blue-400/20">
+                        <span className="text-[8px] font-bold px-2 py-0.5 bg-sky-500/15 text-sky-300 rounded-md uppercase border border-sky-400/25">
                           Aktif
                         </span>
                       </div>
-                      <div className="text-base font-black text-white mt-1 flex items-center gap-2">
-                        <Building2 className="w-4 h-4 text-blue-400 shrink-0" />
+                      <div className="text-base font-bold text-slate-100 mt-1.5 flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-sky-400 shrink-0" />
                         <span className="truncate">{activeAccount.name}</span>
                       </div>
-                      <div className="text-[10px] font-mono text-blue-300/80 mt-0.5">
+                      <div className="text-[10px] font-mono text-slate-400 mt-0.5">
                         ID: @{activeAccount.username}
                       </div>
                     </div>
 
-                    <p className="text-xs text-gray-400 mt-3.5 leading-relaxed">
-                      Dashboard utama operator untuk mengatur lagu, alkitab, jadwal ibadah, layout slide, dan media background khusus akun <strong>{activeAccount.name}</strong>.
+                    <p className="text-xs text-slate-400 mt-3.5 leading-relaxed">
+                      Dashboard utama operator untuk mengatur lagu, alkitab, jadwal ibadah, layout slide, dan media background khusus akun <strong className="text-slate-200">{activeAccount.name}</strong>.
                     </p>
                   </div>
 
@@ -315,9 +314,9 @@ export default function Gateway() {
                         setShowPinForm(true);
                         setPin("");
                       }}
-                      className="py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-600/25 cursor-pointer group-hover:scale-[1.01] active:scale-95"
+                      className="py-3.5 bg-sky-600/90 hover:bg-sky-500 text-white rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_8px_24px_rgba(2,132,199,0.22)] cursor-pointer active:scale-[0.98]"
                     >
-                      Masuk Menu Operator <ArrowRight className="w-3.5 h-3.5 bg-blue-700 p-0.5 rounded-full" />
+                      Masuk Menu Operator <ArrowRight className="w-3.5 h-3.5 opacity-90" />
                     </button>
 
                     <button
@@ -326,9 +325,9 @@ export default function Gateway() {
                         setShowAccountPortalModal(true);
                         setActiveAccountTab("info");
                       }}
-                      className="py-3 bg-[#0d1424] hover:bg-[#121f38] border border-blue-500/30 hover:border-blue-500/60 text-blue-300 hover:text-white rounded-xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-md shadow-blue-950/40 cursor-pointer active:scale-95"
+                      className="py-3 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.09] hover:border-white/20 text-slate-300 hover:text-white rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.98]"
                     >
-                      <Users className="w-4 h-4 text-blue-400" />
+                      <Users className="w-4 h-4 text-sky-400" />
                       Portal Akun
                     </button>
                   </div>
@@ -336,29 +335,29 @@ export default function Gateway() {
               ) : (
                 <motion.div
                   key="pin-form"
-                  initial={{ opacity: 0, scale: 0.95 }}
+                  initial={{ opacity: 0, scale: 0.97 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
+                  exit={{ opacity: 0, scale: 0.97 }}
                   transition={{ duration: 0.15 }}
                   className="h-full flex flex-col justify-between"
                 >
                   <form onSubmit={handleOperatorAccess} className="flex-1 flex flex-col justify-between text-left">
                     <div>
                       <div className="flex justify-between items-center mb-3">
-                        <span className="text-[10px] text-blue-400 font-black tracking-widest uppercase">
+                        <span className="text-[10px] text-sky-400 font-bold tracking-widest uppercase">
                           Validasi PIN Operator ({activeAccount.name})
                         </span>
                         <button
                           type="button"
                           onClick={() => setShowPinForm(false)}
-                          className="text-[9px] text-gray-500 hover:text-white uppercase font-black tracking-widest cursor-pointer"
+                          className="text-[9px] text-slate-500 hover:text-slate-200 uppercase font-bold tracking-widest cursor-pointer transition-colors"
                         >
                           Batal
                         </button>
                       </div>
 
-                      <p className="text-xs text-gray-400 leading-normal mb-4">
-                        Masukkan PIN untuk masuk ke akun <strong>{activeAccount.name}</strong>.
+                      <p className="text-xs text-slate-400 leading-normal mb-4">
+                        Masukkan PIN untuk masuk ke akun <strong className="text-slate-200">{activeAccount.name}</strong>.
                       </p>
 
                       <div className="relative">
@@ -368,23 +367,23 @@ export default function Gateway() {
                           onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
                           placeholder="••••"
                           autoFocus
-                          className={`w-full tracking-[1.5em] text-center font-black text-2xl py-3.5 bg-[#070709] border ${
+                          className={`w-full tracking-[1.5em] text-center font-black text-2xl py-3.5 bg-[#07080B] border tabular-nums ${
                             hasPinError
-                              ? "border-red-500/70 focus:border-red-500 bg-red-950/20 text-red-500"
-                              : "border-blue-500/30 focus:border-blue-500 text-white"
-                          } rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500/40 transition-all`}
+                              ? "border-rose-500/60 focus:border-rose-400 bg-rose-950/20 text-rose-300"
+                              : "border-white/[0.1] focus:border-sky-400/70 text-slate-100"
+                          } rounded-xl focus:outline-none focus:ring-1 focus:ring-sky-400/30 transition-all`}
                         />
                         <button
                           type="button"
                           onClick={() => setShowPinText(!showPinText)}
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white transition-colors cursor-pointer"
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-200 transition-colors cursor-pointer"
                         >
                           {showPinText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
 
                       {hasPinError && (
-                        <p className="text-[9px] text-red-500 font-black uppercase tracking-widest text-center mt-2 animate-bounce">
+                        <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest text-center mt-2">
                           PIN / Password Salah! Silahkan coba lagi.
                         </p>
                       )}
@@ -392,37 +391,39 @@ export default function Gateway() {
                       {/* Mode Ekstend EasyWorship Toggle */}
                       <div
                         onClick={() => setAutoExtend(!autoExtend)}
-                        className="mt-3.5 p-3 bg-blue-950/30 border border-blue-500/30 hover:border-blue-500/60 rounded-xl cursor-pointer flex items-center justify-between transition-all group"
+                        className="mt-3.5 p-3 bg-white/[0.03] border border-white/[0.08] hover:border-sky-400/35 rounded-xl cursor-pointer flex items-center justify-between transition-all group"
                       >
                         <div className="flex items-center gap-2.5">
                           {autoExtend ? (
-                            <CheckSquare className="w-4 h-4 text-blue-400 shrink-0" />
+                            <CheckSquare className="w-4 h-4 text-sky-400 shrink-0" />
                           ) : (
-                            <Square className="w-4 h-4 text-gray-500 shrink-0" />
+                            <Square className="w-4 h-4 text-slate-500 shrink-0" />
                           )}
                           <div className="text-left">
-                            <div className="text-[10px] font-black text-white uppercase tracking-wider">
+                            <div className="text-[10px] font-bold text-slate-100 uppercase tracking-wider">
                               Mode Ekstend EasyWorship
                             </div>
-                            <div className="text-[9px] text-gray-400 leading-tight">
+                            <div className="text-[9px] text-slate-400 leading-tight">
                               Otomatis buka layar proyektor di Monitor 2 (InFocus)
                             </div>
                           </div>
                         </div>
                         <span
-                          className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
-                            autoExtend ? "bg-blue-500/30 text-blue-300" : "bg-gray-800 text-gray-500"
+                          className={`text-[8px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-md border ${
+                            autoExtend
+                              ? "bg-sky-500/15 text-sky-300 border-sky-400/25"
+                              : "bg-white/[0.03] text-slate-500 border-white/[0.06]"
                           }`}
                         >
                           {autoExtend ? "Aktif" : "Mati"}
                         </span>
                       </div>
 
-                      <div className="mt-2 flex flex-col items-center">
+                      <div className="mt-2.5 flex flex-col items-center">
                         <button
                           type="button"
                           onClick={() => setShowForgotPassword(!showForgotPassword)}
-                          className="text-[9px] font-black text-gray-500 hover:text-blue-400 transition-colors uppercase tracking-widest cursor-pointer"
+                          className="text-[9px] font-bold text-slate-500 hover:text-sky-400 transition-colors uppercase tracking-widest cursor-pointer"
                         >
                           {showForgotPassword ? "Tutup Bantuan" : "Lupa PIN?"}
                         </button>
@@ -430,18 +431,18 @@ export default function Gateway() {
                         <AnimatePresence>
                           {showForgotPassword && (
                             <motion.div
-                              initial={{ opacity: 0, scale: 0.95 }}
+                              initial={{ opacity: 0, scale: 0.97 }}
                               animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.95 }}
-                              className="mt-2.5 bg-[#070709] border border-[#2A2A2E]/60 rounded-xl p-3 text-left w-full relative z-10"
+                              exit={{ opacity: 0, scale: 0.97 }}
+                              className="mt-2.5 bg-[#07080B] border border-white/[0.08] rounded-xl p-3 text-left w-full relative z-10"
                             >
                               <div className="flex items-start gap-2 mb-2">
-                                <KeyRound className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+                                <KeyRound className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
                                 <div>
-                                  <span className="text-[9px] font-black text-white uppercase tracking-widest">
+                                  <span className="text-[9px] font-bold text-slate-100 uppercase tracking-widest">
                                     Pemulihan PIN Mandiri
                                   </span>
-                                  <p className="text-[9px] text-gray-500 leading-normal mt-0.5">
+                                  <p className="text-[9px] text-slate-400 leading-normal mt-0.5">
                                     Gunakan Password Akun Anda untuk masuk, atau setel ulang PIN operator ke "1234".
                                   </p>
                                 </div>
@@ -453,7 +454,7 @@ export default function Gateway() {
                                   setPin("1234");
                                   setShowForgotPassword(false);
                                 }}
-                                className="w-full text-center py-2 bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 text-blue-300 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer"
+                                className="w-full text-center py-2 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/25 text-sky-300 hover:text-white rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all cursor-pointer"
                               >
                                 Setel Ulang PIN ke Bawaan "1234"
                               </button>
@@ -467,7 +468,7 @@ export default function Gateway() {
                       <button
                         type="submit"
                         disabled={pin.length < 3}
-                        className="py-3.5 w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/40 disabled:text-gray-500 text-white rounded-xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-md shadow-blue-600/25 cursor-pointer active:scale-95"
+                        className="py-3.5 w-full bg-sky-600/90 hover:bg-sky-500 disabled:bg-white/[0.04] disabled:text-slate-600 disabled:border disabled:border-white/[0.06] text-white rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_8px_24px_rgba(2,132,199,0.2)] cursor-pointer active:scale-[0.98]"
                       >
                         Konfirmasi & Masuk Operator <Unlock className="w-3.5 h-3.5" />
                       </button>
@@ -479,9 +480,9 @@ export default function Gateway() {
                           setShowAccountPortalModal(true);
                           setActiveAccountTab("info");
                         }}
-                        className="py-3 w-full bg-[#0d1424] hover:bg-[#121f38] border border-blue-500/30 hover:border-blue-500/60 text-blue-300 hover:text-white rounded-xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-md shadow-blue-950/40 cursor-pointer active:scale-95"
+                        className="py-3 w-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.09] hover:border-white/20 text-slate-300 hover:text-white rounded-xl font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.98]"
                       >
-                        <Users className="w-4 h-4 text-blue-400" />
+                        <Users className="w-4 h-4 text-sky-400" />
                         Portal Akun
                       </button>
                     </div>
@@ -495,28 +496,28 @@ export default function Gateway() {
         {/* Modal Portal Akun */}
         <AnimatePresence>
           {showAccountPortalModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-150">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150">
               <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                initial={{ opacity: 0, scale: 0.97, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 15 }}
-                className="relative bg-[#0d1424]/95 backdrop-blur-md rounded-2xl border border-blue-500/30 p-6 sm:p-7 transition-all flex flex-col justify-between overflow-hidden group max-w-lg w-full shadow-2xl shadow-blue-950/50 max-h-[90vh] overflow-y-auto text-left"
+                exit={{ opacity: 0, scale: 0.97, y: 12 }}
+                className="relative bg-[#0D1017]/95 backdrop-blur-xl rounded-2xl border border-white/[0.09] p-6 sm:p-7 transition-all flex flex-col justify-between overflow-hidden group max-w-lg w-full shadow-[0_24px_70px_rgba(0,0,0,0.8)] max-h-[90vh] overflow-y-auto text-left"
               >
                 {/* Background Glow */}
-                <div className="absolute top-0 right-0 w-44 h-44 rounded-full bg-blue-600/15 filter blur-[60px] pointer-events-none" />
+                <div className="absolute -top-12 -right-12 w-44 h-44 rounded-full bg-sky-500/[0.08] filter blur-[60px] pointer-events-none" />
 
                 <div>
                   {/* Header & Tabs */}
-                  <div className="flex items-center justify-between mb-5 border-b border-blue-500/15 pb-4">
+                  <div className="flex items-center justify-between mb-5 border-b border-white/[0.07] pb-4">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center border border-blue-400/40 shadow-md shadow-blue-600/25">
-                        <Users className="w-5 h-5 text-white" />
+                      <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center border border-sky-400/25">
+                        <Users className="w-5 h-5 text-sky-400" />
                       </div>
                       <div>
-                        <h3 className="text-base font-black text-white uppercase tracking-tight">
+                        <h3 className="text-base font-bold text-slate-100 uppercase tracking-tight">
                           Portal Akun Gereja
                         </h3>
-                        <span className="text-[9.5px] text-blue-300/80 font-mono">
+                        <span className="text-[9.5px] text-slate-400 font-mono">
                           Kelola & Pindah Akun Multi-Tenant
                         </span>
                       </div>
@@ -525,40 +526,40 @@ export default function Gateway() {
                     <button
                       type="button"
                       onClick={() => setShowAccountPortalModal(false)}
-                      className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                      className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
                     >
                       <X className="w-5 h-5" />
                     </button>
                   </div>
 
                   {/* Navigation Tabs */}
-                  <div className="flex items-center gap-1.5 bg-[#060b14] p-1.5 rounded-xl border border-blue-500/20 mb-5">
+                  <div className="flex items-center gap-1.5 bg-[#07080B] p-1.5 rounded-xl border border-white/[0.07] mb-5">
                     <button
                       onClick={() => setActiveAccountTab("info")}
-                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all cursor-pointer text-center ${
+                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-bold uppercase tracking-wider transition-all cursor-pointer text-center ${
                         activeAccountTab === "info"
-                          ? "bg-blue-600 text-white shadow-md shadow-blue-600/30"
-                          : "text-slate-400 hover:text-white"
+                          ? "bg-sky-500/15 text-sky-300 border border-sky-400/30"
+                          : "text-slate-400 hover:text-slate-200 border border-transparent"
                       }`}
                     >
                       Status Akun
                     </button>
                     <button
                       onClick={() => setActiveAccountTab("create")}
-                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer ${
                         activeAccountTab === "create"
-                          ? "bg-blue-600 text-white shadow-md shadow-blue-600/30"
-                          : "text-slate-400 hover:text-white"
+                          ? "bg-sky-500/15 text-sky-300 border border-sky-400/30"
+                          : "text-slate-400 hover:text-slate-200 border border-transparent"
                       }`}
                     >
                       <Plus className="w-3.5 h-3.5" /> Buat Akun
                     </button>
                     <button
                       onClick={() => setActiveAccountTab("switch")}
-                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                      className={`flex-1 py-1.5 rounded-lg text-[9.5px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1 cursor-pointer ${
                         activeAccountTab === "switch"
-                          ? "bg-blue-600 text-white shadow-md shadow-blue-600/30"
-                          : "text-slate-400 hover:text-white"
+                          ? "bg-sky-500/15 text-sky-300 border border-sky-400/30"
+                          : "text-slate-400 hover:text-slate-200 border border-transparent"
                       }`}
                     >
                       <Users className="w-3.5 h-3.5" /> Pilih ({accounts.length})
@@ -572,31 +573,31 @@ export default function Gateway() {
                       animate={{ opacity: 1 }}
                       className="space-y-3.5"
                     >
-                      <div className="p-4 bg-blue-950/40 border border-blue-500/30 rounded-xl relative shadow-inner">
+                      <div className="p-4 bg-white/[0.03] border border-white/[0.08] rounded-xl relative">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                             Akun Terhubung
                           </span>
-                          <span className="text-[8.5px] font-black px-2 py-0.5 bg-blue-500/25 text-blue-200 rounded uppercase border border-blue-400/20">
+                          <span className="text-[8.5px] font-bold px-2 py-0.5 bg-sky-500/15 text-sky-300 rounded-md uppercase border border-sky-400/25">
                             Aktif Saat Ini
                           </span>
                         </div>
-                        <div className="text-lg font-black text-white mt-1.5 flex items-center gap-2">
-                          <Building2 className="w-5 h-5 text-blue-400 shrink-0" />
+                        <div className="text-lg font-bold text-slate-100 mt-1.5 flex items-center gap-2">
+                          <Building2 className="w-5 h-5 text-sky-400 shrink-0" />
                           <span className="truncate">{activeAccount.name}</span>
                         </div>
-                        <div className="text-[11px] font-mono text-blue-300/80 mt-0.5">
+                        <div className="text-[11px] font-mono text-slate-400 mt-0.5">
                           Username ID: @{activeAccount.username}
                         </div>
                       </div>
 
-                      <div className="bg-[#070d18] p-3.5 rounded-xl border border-blue-500/15 space-y-2 text-xs text-slate-300">
-                        <div className="flex items-center gap-2 text-slate-200 font-semibold">
-                          <Check className="w-4 h-4 text-blue-400 shrink-0" />
+                      <div className="bg-[#080A0E] p-3.5 rounded-xl border border-white/[0.06] space-y-2 text-xs text-slate-300">
+                        <div className="flex items-center gap-2 text-slate-200 font-medium">
+                          <Check className="w-4 h-4 text-sky-400 shrink-0" />
                           <span>Lagu, Alkitab, dan Jadwal khusus akun ini</span>
                         </div>
-                        <div className="flex items-center gap-2 text-slate-200 font-semibold">
-                          <Check className="w-4 h-4 text-blue-400 shrink-0" />
+                        <div className="flex items-center gap-2 text-slate-200 font-medium">
+                          <Check className="w-4 h-4 text-sky-400 shrink-0" />
                           <span>Layar proyektor hanya menampilkan slide akun ini</span>
                         </div>
                       </div>
@@ -606,16 +607,16 @@ export default function Gateway() {
                         <button
                           type="button"
                           onClick={() => setAccountToDelete(activeAccount)}
-                          className="text-xs text-rose-300 hover:text-rose-200 hover:bg-rose-500/15 px-3 py-2 rounded-xl border border-rose-500/30 transition-all font-bold flex items-center gap-1.5 cursor-pointer active:scale-95"
+                          className="text-xs text-rose-300/90 hover:text-rose-200 hover:bg-rose-500/10 px-3 py-2 rounded-xl border border-rose-500/20 transition-all font-bold flex items-center gap-1.5 cursor-pointer active:scale-95"
                         >
                           <Trash2 className="w-4 h-4 text-rose-400" /> Hapus Akun Ini
                         </button>
                         <button
                           type="button"
                           onClick={() => setActiveAccountTab("switch")}
-                          className="text-xs text-blue-300 hover:text-white px-3.5 py-2 rounded-xl border border-blue-500/25 bg-blue-500/10 hover:bg-blue-500/20 transition-all font-bold flex items-center gap-1.5 cursor-pointer"
+                          className="text-xs text-sky-300 hover:text-white px-3.5 py-2 rounded-xl border border-sky-400/25 bg-sky-500/10 hover:bg-sky-500/20 transition-all font-bold flex items-center gap-1.5 cursor-pointer"
                         >
-                          <Users className="w-4 h-4 text-blue-400" /> Kelola Semua Akun ({accounts.length})
+                          <Users className="w-4 h-4 text-sky-400" /> Kelola Semua Akun ({accounts.length})
                         </button>
                       </div>
                     </motion.div>
@@ -625,17 +626,17 @@ export default function Gateway() {
                   {activeAccountTab === "create" && (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3.5">
                       <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-black text-white uppercase tracking-tight">
+                        <h3 className="text-sm font-bold text-slate-100 uppercase tracking-tight">
                           Buat Akun Gereja Baru
                         </h3>
-                        <span className="text-[10px] text-blue-400 font-mono font-bold">
+                        <span className="text-[10px] text-sky-400 font-mono font-bold tabular-nums">
                           Akun #{accounts.length + 1}
                         </span>
                       </div>
 
                       <form onSubmit={handleCreateAccountSubmit} className="space-y-3">
                         <div>
-                          <label className="text-[9.5px] font-black text-slate-300 uppercase tracking-wider block mb-1">
+                          <label className="text-[9.5px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
                             Nama Gereja / Pos Pelayanan
                           </label>
                           <input
@@ -644,30 +645,30 @@ export default function Gateway() {
                             value={regName}
                             onChange={(e) => setRegName(e.target.value)}
                             placeholder="Contoh: HKBP Kebayoran / Pemuda GKI"
-                            className="w-full px-3.5 py-2.5 bg-[#070d18] border border-blue-500/20 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-semibold"
+                            className="w-full px-3.5 py-2.5 bg-[#07080B] border border-white/[0.1] rounded-xl text-xs text-slate-100 focus:outline-none focus:border-sky-400/70 font-medium placeholder:text-slate-600"
                           />
                         </div>
 
                         <div className="grid grid-cols-2 gap-2.5">
                           <div>
-                            <label className="text-[9.5px] font-black text-slate-300 uppercase tracking-wider block mb-1">
+                            <label className="text-[9.5px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
                               Username ID
                             </label>
                             <div className="relative">
-                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-blue-400 text-xs font-mono">@</span>
+                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sky-400 text-xs font-mono">@</span>
                               <input
                                 type="text"
                                 required
                                 value={regUsername}
                                 onChange={(e) => setRegUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))}
                                 placeholder="hkbp_kebayoran"
-                                className="w-full pl-6 pr-2 py-2.5 bg-[#070d18] border border-blue-500/20 rounded-xl text-xs text-white font-mono focus:outline-none focus:border-blue-500"
+                                className="w-full pl-6 pr-2 py-2.5 bg-[#07080B] border border-white/[0.1] rounded-xl text-xs text-slate-100 font-mono focus:outline-none focus:border-sky-400/70 placeholder:text-slate-600"
                               />
                             </div>
                           </div>
 
                           <div>
-                            <label className="text-[9.5px] font-black text-slate-300 uppercase tracking-wider block mb-1">
+                            <label className="text-[9.5px] font-bold text-slate-300 uppercase tracking-wider block mb-1">
                               PIN Operator
                             </label>
                             <input
@@ -676,28 +677,28 @@ export default function Gateway() {
                               value={regPin}
                               onChange={(e) => setRegPin(e.target.value.replace(/\D/g, ""))}
                               placeholder="1234"
-                              className="w-full px-3 py-2.5 bg-[#070d18] border border-blue-500/20 rounded-xl text-xs text-white font-mono focus:outline-none focus:border-blue-500 text-center font-bold tracking-widest"
+                              className="w-full px-3 py-2.5 bg-[#07080B] border border-white/[0.1] rounded-xl text-xs text-slate-100 font-mono focus:outline-none focus:border-sky-400/70 text-center font-bold tracking-widest tabular-nums"
                             />
                           </div>
                         </div>
 
                         {regError && (
-                          <div className="p-2.5 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-400 font-bold flex items-center gap-1.5">
-                            <AlertCircle className="w-4 h-4 shrink-0" />
+                          <div className="p-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-xs text-rose-300 font-semibold flex items-center gap-1.5">
+                            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
                             <span>{regError}</span>
                           </div>
                         )}
 
                         {regSuccess && (
-                          <div className="p-2.5 bg-blue-950/40 border border-blue-500/30 rounded-xl text-xs text-blue-300 font-bold flex items-center gap-1.5">
-                            <Sparkles className="w-4 h-4 shrink-0 text-blue-400" />
+                          <div className="p-2.5 bg-sky-500/10 border border-sky-400/25 rounded-xl text-xs text-sky-300 font-semibold flex items-center gap-1.5">
+                            <Sparkles className="w-4 h-4 shrink-0 text-sky-400" />
                             <span>{regSuccess}</span>
                           </div>
                         )}
 
                         <button
                           type="submit"
-                          className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-md shadow-blue-600/30 flex items-center justify-center gap-1.5 mt-2 cursor-pointer active:scale-95"
+                          className="w-full py-3 bg-sky-600/90 hover:bg-sky-500 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all shadow-[0_8px_24px_rgba(2,132,199,0.2)] flex items-center justify-center gap-1.5 mt-2 cursor-pointer active:scale-[0.98]"
                         >
                           <UserPlus className="w-4 h-4" /> Buat & Aktifkan Akun
                         </button>
@@ -709,32 +710,32 @@ export default function Gateway() {
                   {activeAccountTab === "switch" && (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-black text-white uppercase tracking-tight">
+                        <h3 className="text-sm font-bold text-slate-100 uppercase tracking-tight">
                           Daftar Akun Terdaftar ({accounts.length})
                         </h3>
                         <button
                           onClick={() => setActiveAccountTab("create")}
-                          className="text-[10px] font-black text-blue-400 hover:underline uppercase flex items-center gap-1 cursor-pointer"
+                          className="text-[10px] font-bold text-sky-400 hover:underline uppercase flex items-center gap-1 cursor-pointer"
                         >
                           <Plus className="w-3.5 h-3.5" /> Tambah Baru
                         </button>
                       </div>
 
                       {deleteSuccessMsg && (
-                        <div className="p-2.5 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 font-bold flex items-center gap-1.5">
+                        <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/25 rounded-xl text-xs text-emerald-300 font-semibold flex items-center gap-1.5">
                           <Check className="w-4 h-4 shrink-0" />
                           <span>{deleteSuccessMsg}</span>
                         </div>
                       )}
 
                       {deleteErrorMsg && (
-                        <div className="p-2.5 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-400 font-bold flex items-center gap-1.5">
+                        <div className="p-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-xs text-rose-300 font-semibold flex items-center gap-1.5">
                           <AlertCircle className="w-4 h-4 shrink-0" />
                           <span>{deleteErrorMsg}</span>
                         </div>
                       )}
 
-                      <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1">
+                      <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
                         {accounts.map((acc) => {
                           const isCurrent = acc.id === activeAccount.id;
                           return (
@@ -742,16 +743,16 @@ export default function Gateway() {
                               key={acc.id}
                               className={`p-3 rounded-xl border transition-all flex items-center justify-between ${
                                 isCurrent
-                                  ? "bg-blue-950/40 border-blue-500/50 text-white shadow-sm shadow-blue-950/50"
-                                  : "bg-[#070d18] border-blue-500/15 hover:border-blue-500/35 text-slate-300"
+                                  ? "bg-sky-500/[0.08] border-sky-400/35 text-slate-100"
+                                  : "bg-[#080A0E] border-white/[0.07] hover:border-white/20 text-slate-300"
                               }`}
                             >
                               <div className="min-w-0 pr-2">
-                                <div className="text-xs font-black truncate flex items-center gap-1.5">
-                                  <Building2 className="w-4 h-4 text-blue-400 shrink-0" />
+                                <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                                  <Building2 className="w-4 h-4 text-sky-400 shrink-0" />
                                   <span className="truncate">{acc.name}</span>
                                   {isCurrent && (
-                                    <span className="text-[8px] px-1.5 py-0.5 bg-blue-500/25 text-blue-300 rounded font-mono uppercase border border-blue-400/20">
+                                    <span className="text-[8px] px-1.5 py-0.5 bg-sky-500/15 text-sky-300 rounded font-mono uppercase border border-sky-400/25">
                                       Aktif
                                     </span>
                                   )}
@@ -770,12 +771,12 @@ export default function Gateway() {
                                       setSwitchPassword("");
                                       setSwitchError("");
                                     }}
-                                    className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 text-blue-300 hover:text-white rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                                    className="px-3 py-1.5 bg-sky-500/15 hover:bg-sky-600 border border-sky-400/30 text-sky-300 hover:text-white rounded-lg text-[9.5px] font-bold uppercase tracking-wider transition-all cursor-pointer"
                                   >
                                     Ganti Akun
                                   </button>
                                 ) : (
-                                  <span className="text-[9.5px] font-extrabold text-blue-400 px-2 py-1 bg-blue-500/15 rounded-lg border border-blue-500/20">
+                                  <span className="text-[9.5px] font-bold text-sky-300 px-2 py-1 bg-sky-500/10 rounded-lg border border-sky-400/20">
                                     Sedang Dipakai
                                   </span>
                                 )}
@@ -786,7 +787,7 @@ export default function Gateway() {
                                     e.stopPropagation();
                                     setAccountToDelete(acc);
                                   }}
-                                  className="p-1.5 text-slate-400 hover:text-rose-300 hover:bg-rose-500/15 rounded-lg border border-transparent hover:border-rose-500/30 transition-all cursor-pointer"
+                                  className="p-1.5 text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/25 transition-all cursor-pointer"
                                   title={`Hapus Akun ${acc.name}`}
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -802,11 +803,11 @@ export default function Gateway() {
                   {/* Password Modal for Switch Account */}
                   {selectedAccForSwitch && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-                      <div className="bg-[#0b1322] border border-blue-500/30 rounded-2xl p-5 max-w-sm w-full text-left shadow-2xl">
+                      <div className="bg-[#0D1017] border border-white/[0.1] rounded-2xl p-5 max-w-sm w-full text-left shadow-2xl">
                         <div className="flex justify-between items-center mb-3">
                           <div className="flex items-center gap-2">
-                            <Building2 className="w-4 h-4 text-blue-400" />
-                            <h4 className="text-sm font-black text-white uppercase">
+                            <Building2 className="w-4 h-4 text-sky-400" />
+                            <h4 className="text-sm font-bold text-slate-100 uppercase">
                               Masuk ke {selectedAccForSwitch.name}
                             </h4>
                           </div>
@@ -818,8 +819,8 @@ export default function Gateway() {
                           </button>
                         </div>
 
-                        <p className="text-xs text-slate-300 mb-4">
-                          Masukkan PIN Operator atau Password untuk berpindah ke akun <strong>@{selectedAccForSwitch.username}</strong>.
+                        <p className="text-xs text-slate-400 mb-4">
+                          Masukkan PIN Operator atau Password untuk berpindah ke akun <strong className="text-slate-200">@{selectedAccForSwitch.username}</strong>.
                         </p>
 
                         <form onSubmit={handleSwitchAccountSubmit} className="space-y-3">
@@ -829,7 +830,7 @@ export default function Gateway() {
                             value={switchPassword}
                             onChange={(e) => setSwitchPassword(e.target.value)}
                             placeholder="PIN / Password Akun"
-                            className="w-full px-3 py-2.5 bg-[#070d18] border border-blue-500/25 rounded-xl text-center text-lg font-black tracking-widest text-white focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2.5 bg-[#07080B] border border-white/[0.1] rounded-xl text-center text-lg font-black tracking-widest text-slate-100 focus:outline-none focus:border-sky-400/70"
                           />
 
                           {switchError && (
@@ -840,7 +841,7 @@ export default function Gateway() {
 
                           <button
                             type="submit"
-                            className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-black text-xs uppercase tracking-wider cursor-pointer shadow-lg shadow-blue-600/30"
+                            className="w-full py-2.5 bg-sky-600/90 hover:bg-sky-500 text-white rounded-xl font-bold text-xs uppercase tracking-wider cursor-pointer transition-all"
                           >
                             Konfirmasi Pindah Akun
                           </button>
@@ -852,24 +853,24 @@ export default function Gateway() {
                   {/* Delete Account Confirmation Modal */}
                   {accountToDelete && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in duration-150">
-                      <div className="bg-[#0b1322] border border-blue-500/40 rounded-2xl p-6 max-w-md w-full text-left shadow-2xl relative">
+                      <div className="bg-[#0D1017] border border-white/[0.1] rounded-2xl p-6 max-w-md w-full text-left shadow-2xl relative">
                         <div className="flex justify-between items-start mb-4">
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                            <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-center justify-center text-rose-400">
                               <Trash2 className="w-5 h-5" />
                             </div>
                             <div>
-                              <h4 className="text-base font-black text-white uppercase tracking-tight">
+                              <h4 className="text-base font-bold text-slate-100 uppercase tracking-tight">
                                 {accounts.length <= 1 ? "Tidak Dapat Menghapus Akun" : "Konfirmasi Hapus Akun"}
                               </h4>
-                              <span className="text-[10px] text-blue-400 font-mono font-bold">
+                              <span className="text-[10px] text-sky-400 font-mono font-semibold">
                                 @{accountToDelete.username}
                               </span>
                             </div>
                           </div>
                           <button
                             onClick={() => setAccountToDelete(null)}
-                            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
                           >
                             <X className="w-4 h-4" />
                           </button>
@@ -877,7 +878,7 @@ export default function Gateway() {
 
                         {accounts.length <= 1 ? (
                           <div className="space-y-4">
-                            <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs leading-relaxed">
+                            <div className="p-3.5 bg-amber-500/[0.08] border border-amber-500/25 rounded-xl text-amber-200 text-xs leading-relaxed">
                               Akun <strong>"{accountToDelete.name}"</strong> adalah satu-satunya akun yang terdaftar dalam sistem. Sistem memerlukan minimal 1 akun aktif untuk beroperasi.
                             </div>
                             <p className="text-xs text-slate-400 leading-relaxed">
@@ -890,14 +891,14 @@ export default function Gateway() {
                                   setAccountToDelete(null);
                                   setActiveAccountTab("create");
                                 }}
-                                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-md shadow-blue-600/30"
+                                className="flex-1 py-2.5 bg-sky-600/90 hover:bg-sky-500 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
                               >
                                 Buat Akun Baru
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setAccountToDelete(null)}
-                                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                                className="px-4 py-2.5 bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-200 rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
                               >
                                 Tutup
                               </button>
@@ -905,20 +906,20 @@ export default function Gateway() {
                           </div>
                         ) : (
                           <div className="space-y-4">
-                            <div className="p-3.5 bg-slate-900/90 border border-blue-500/30 rounded-xl">
-                              <div className="text-xs text-slate-300 mb-1">
+                            <div className="p-3.5 bg-[#080A0E] border border-white/[0.08] rounded-xl">
+                              <div className="text-xs text-slate-400 mb-1">
                                 Anda akan menghapus akun gereja:
                               </div>
-                              <div className="text-sm font-black text-white flex items-center gap-2">
-                                <Building2 className="w-4 h-4 text-blue-400 shrink-0" />
+                              <div className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                                <Building2 className="w-4 h-4 text-sky-400 shrink-0" />
                                 <span className="truncate">{accountToDelete.name}</span>
                               </div>
-                              <div className="text-[10px] text-blue-300 font-mono mt-0.5">
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
                                 Username ID: @{accountToDelete.username}
                               </div>
                             </div>
 
-                            <div className="text-xs text-slate-400 space-y-1.5 bg-[#070d18] p-3 rounded-xl border border-white/5">
+                            <div className="text-xs text-slate-400 space-y-1.5 bg-[#080A0E] p-3 rounded-xl border border-white/[0.06]">
                               <div className="text-rose-400 font-bold flex items-center gap-1.5 text-[11px]">
                                 <AlertCircle className="w-4 h-4 shrink-0" />
                                 Perhatian: Tindakan ini permanen!
@@ -932,14 +933,14 @@ export default function Gateway() {
                               <button
                                 type="button"
                                 onClick={() => setAccountToDelete(null)}
-                                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                                className="flex-1 py-2.5 bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
                               >
                                 Batal
                               </button>
                               <button
                                 type="button"
                                 onClick={confirmDeleteAccount}
-                                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-lg shadow-rose-600/30 flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                                className="flex-1 py-2.5 bg-rose-600/85 hover:bg-rose-500 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
                               >
                                 <Trash2 className="w-4 h-4" /> Ya, Hapus Akun
                               </button>
@@ -952,10 +953,10 @@ export default function Gateway() {
                 </div>
 
                 {/* Modal Footer */}
-                <div className="mt-5 pt-3.5 border-t border-blue-500/15 flex items-center justify-between text-[10px] text-slate-400">
+                <div className="mt-5 pt-3.5 border-t border-white/[0.07] flex items-center justify-between text-[10px] text-slate-400">
                   <button
                     onClick={() => setActiveAccountTab(activeAccountTab === "create" ? "switch" : "create")}
-                    className="font-bold text-blue-400 hover:underline flex items-center gap-1 uppercase cursor-pointer"
+                    className="font-bold text-sky-400 hover:underline flex items-center gap-1 uppercase cursor-pointer"
                   >
                     {activeAccountTab === "create" ? (
                       <>
@@ -979,32 +980,28 @@ export default function Gateway() {
       </main>
 
       {/* Footer */}
-      <footer className="w-full max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center text-[10px] text-gray-500 font-bold uppercase tracking-wider z-10 py-4 border-t border-white/5 gap-4">
+      <footer className="w-full max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center text-[10px] text-slate-500 font-bold uppercase tracking-wider z-10 py-4 border-t border-white/[0.06] gap-4">
         <div className="flex items-center space-x-4">
-          <div className="text-zinc-400">Church Presenter System</div>
-          <div className="text-zinc-600 hidden sm:inline">|</div>
-          <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-[#000000] border border-red-500/20 text-red-500 rounded-md text-[8.5px] font-extrabold shadow-sm">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
-            </span>
-            <Copy className="w-3 h-3 text-red-500" />
-            <span className="text-zinc-300 font-black">DILARANG MENDUPLIKAT APLIKASI</span>
+          <div className="text-slate-400">Church Presenter System</div>
+          <div className="text-slate-700 hidden sm:inline">|</div>
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-white/[0.03] border border-white/[0.08] text-slate-400 rounded-md text-[8.5px] font-bold">
+            <Copy className="w-3 h-3 text-slate-400" />
+            <span className="text-slate-300 font-bold">DILARANG MENDUPLIKAT APLIKASI</span>
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-center gap-1 sm:gap-2 text-[9px] text-zinc-500">
+        <div className="flex flex-col sm:flex-row items-center gap-1 sm:gap-2 text-[9px] text-slate-500">
           <span>App Developer :</span>
-          <span className="text-blue-400 font-black uppercase tracking-tight text-[10px]">
+          <span className="text-sky-400 font-bold uppercase tracking-tight text-[10px]">
             Pirma Siahaan
           </span>
-          <span className="text-zinc-700 hidden sm:inline">|</span>
-          <span className="text-zinc-400 font-mono lowercase">
+          <span className="text-slate-700 hidden sm:inline">|</span>
+          <span className="text-slate-400 font-mono lowercase">
             Email : pirmasiahaan1234@gmail.com
           </span>
         </div>
 
-        <div className="text-zinc-500 text-[9px]">
+        <div className="text-slate-500 text-[9px]">
           All rights reserved &copy; 2026
         </div>
       </footer>

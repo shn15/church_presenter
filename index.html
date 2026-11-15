@@ -6,6 +6,15 @@
     <title>Church Presenter</title>
     <link rel="icon" type="image/jpeg" href="/logo.jpeg" />
     <link rel="manifest" href="/manifest.json" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("cp_settings_ui_theme") === "light" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", t);
+          if (t === "light") document.documentElement.classList.add("theme-light");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <script>

@@ -717,18 +717,18 @@ export default function ProjectorDisplay() {
     return (
       <AnimatePresence>
         {isScannerOpen && (
-          <div className="fixed inset-0 bg-zinc-950/95 backdrop-blur-xl z-50 flex flex-col justify-between p-6 overflow-y-auto font-sans text-gray-200">
+          <div className="fixed inset-0 bg-[#07080B]/95 backdrop-blur-xl z-50 flex flex-col justify-between p-6 overflow-y-auto font-sans text-slate-200">
             {/* Header */}
-            <div className="flex items-center justify-between py-2 border-b border-white/5">
+            <div className="flex items-center justify-between py-2 border-b border-white/[0.07]">
               <div className="flex items-center gap-2">
-                <span className="p-1 px-2 rounded bg-blue-500/10 text-blue-400 text-[9px] font-mono font-black uppercase tracking-widest">
+                <span className="p-1 px-2 rounded-md bg-sky-500/10 border border-sky-400/25 text-sky-300 text-[9px] font-mono font-bold uppercase tracking-widest">
                   Security Portal
                 </span>
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Otentikasi Perangkat</h3>
+                <h3 className="text-xs font-bold text-slate-100 uppercase tracking-wider">Otentikasi Perangkat</h3>
               </div>
               <button
                 onClick={closeScanner}
-                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all cursor-pointer"
+                className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-slate-400 hover:text-white transition-all cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -738,53 +738,53 @@ export default function ProjectorDisplay() {
             <div className="my-auto py-6 flex flex-col items-center">
               <div className="flex flex-col items-center">
                 {/* Camera Container Frame */}
-                <div className="relative w-[280px] h-[280px] rounded-3xl overflow-hidden border border-white/10 bg-zinc-900 flex flex-col items-center justify-center shadow-2xl">
-                  <span className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-blue-500 rounded-tl-lg pointer-events-none z-10" />
-                  <span className="absolute top-4 right-4 w-6 h-6 border-t-2 border-r-2 border-blue-500 rounded-tr-lg pointer-events-none z-10" />
-                  <span className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-blue-500 rounded-bl-lg pointer-events-none z-10" />
-                  <span className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-blue-500 rounded-br-lg pointer-events-none z-10" />
+                <div className="relative w-[280px] h-[280px] rounded-3xl overflow-hidden border border-white/[0.1] bg-[#0D1017] flex flex-col items-center justify-center shadow-2xl">
+                  <span className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-sky-400 rounded-tl-lg pointer-events-none z-10" />
+                  <span className="absolute top-4 right-4 w-6 h-6 border-t-2 border-r-2 border-sky-400 rounded-tr-lg pointer-events-none z-10" />
+                  <span className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-sky-400 rounded-bl-lg pointer-events-none z-10" />
+                  <span className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-sky-400 rounded-br-lg pointer-events-none z-10" />
                   
                   {!scannerLoading && !scanFeedbackMsg && !scannerError && (
-                    <div className="absolute left-0 right-0 h-0.5 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.8)] animate-[bounce_2s_infinite] pointer-events-none z-10" />
+                    <div className="absolute left-0 right-0 h-0.5 bg-sky-400/70 shadow-[0_0_8px_rgba(56,189,248,0.5)] animate-[bounce_2s_infinite] pointer-events-none z-10" />
                   )}
 
                   <div id="qr-reader-target" className="w-[280px] h-[280px] object-cover" />
                   
                   {scannerLoading && (
-                    <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3">
-                      <div className="w-8 h-8 rounded-full border border-blue-500 border-t-transparent animate-spin" />
-                      <p className="text-[10px] font-mono uppercase tracking-widest text-blue-400">Memuat Kamera...</p>
+                    <div className="absolute inset-0 bg-[#07080B]/85 flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 rounded-full border border-sky-400 border-t-transparent animate-spin" />
+                      <p className="text-[10px] font-mono uppercase tracking-widest text-sky-300">Memuat Kamera...</p>
                     </div>
                   )}
 
                   {scanFeedbackMsg && (
-                    <div className="absolute inset-0 bg-emerald-950/90 flex flex-col items-center justify-center p-6 text-center z-20 font-sans">
-                      <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center mb-3">
+                    <div className="absolute inset-0 bg-[#0D1017]/95 flex flex-col items-center justify-center p-6 text-center z-20 font-sans">
+                      <div className="w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-400/30 flex items-center justify-center mb-3">
                         <Check className="w-6 h-6 text-emerald-400" />
                       </div>
-                      <p className="text-sm font-bold text-white uppercase tracking-wider">{scanFeedbackMsg}</p>
+                      <p className="text-sm font-bold text-slate-100 uppercase tracking-wider">{scanFeedbackMsg}</p>
                     </div>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 mt-4 max-w-xs text-center leading-normal font-sans">
+                <p className="text-[10px] text-slate-400 mt-4 max-w-xs text-center leading-normal font-sans">
                   Arahkan kamera belakang ponsel ke QR Code Church Presenter yang dicetak atau ditampilkan di depan.
                 </p>
               </div>
 
               {/* Validation Error Message Box */}
               {scannerError && (
-                <div className="mt-6 w-full max-w-xs p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-start gap-3 text-rose-400 text-left font-sans">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="mt-6 w-full max-w-xs p-3.5 bg-rose-500/[0.08] border border-rose-500/25 rounded-2xl flex items-start gap-3 text-rose-300 text-left font-sans">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
                   <div>
-                    <h5 className="text-[10px] font-black uppercase tracking-wider text-rose-500">Koneksi Gagal</h5>
-                    <p className="text-[11px] leading-relaxed mt-0.5 text-gray-300">{scannerError}</p>
+                    <h5 className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Koneksi Gagal</h5>
+                    <p className="text-[11px] leading-relaxed mt-0.5 text-slate-300">{scannerError}</p>
                   </div>
                 </div>
               )}
             </div>
 
             {/* Footer */}
-            <div className="text-center text-[8px] text-gray-600 font-bold uppercase tracking-widest border-t border-white/5 pt-4">
+            <div className="text-center text-[8px] text-slate-500 font-bold uppercase tracking-widest border-t border-white/[0.07] pt-4">
               Church Presenter Cloud Sync System
             </div>
           </div>
@@ -796,16 +796,16 @@ export default function ProjectorDisplay() {
   // Mobile share shift restrictions
   if (isMobileShare && isShiftEnded) {
     return (
-      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
-        <div className="border border-rose-500/20 bg-rose-500/5 p-8 rounded-3xl max-w-sm flex flex-col items-center shadow-2xl backdrop-blur-md">
-          <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-5 text-rose-500">
-            <Clock className="w-8 h-8" />
+      <div className="bg-[#07080B] w-screen h-screen flex flex-col items-center justify-center text-slate-100 font-sans p-6 text-center">
+        <div className="border border-white/[0.09] bg-[#0D1017]/90 p-8 rounded-3xl max-w-sm flex flex-col items-center shadow-2xl backdrop-blur-xl">
+          <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-5 text-rose-400">
+            <Clock className="w-7 h-7" />
           </div>
-          <h2 className="text-lg font-black uppercase tracking-wider text-white mb-2">Shift Ibadah Berakhir</h2>
-          <p className="text-xs text-gray-400 leading-relaxed mb-6">
+          <h2 className="text-lg font-bold uppercase tracking-wider text-slate-100 mb-2">Shift Ibadah Berakhir</h2>
+          <p className="text-xs text-slate-400 leading-relaxed mb-6">
             Waktu operasional shift ibadah ({currentShift?.name || "Aktif"}) telah selesai. Tampilan mobile share telah dinonaktifkan secara otomatis.
           </p>
-          <div className="text-[10px] text-gray-500 font-mono uppercase tracking-widest border-t border-white/10 pt-4 w-full">
+          <div className="text-[10px] text-slate-500 font-mono uppercase tracking-widest border-t border-white/[0.07] pt-4 w-full">
             Church Presenter Cloud Sync
           </div>
         </div>
@@ -815,19 +815,19 @@ export default function ProjectorDisplay() {
 
   if (isMobileShare && !isSessionValid) {
     return (
-      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
+      <div className="bg-[#07080B] w-screen h-screen flex flex-col items-center justify-center text-slate-100 font-sans p-6 text-center">
         {renderScannerModal()}
-        <div className="border border-blue-500/20 bg-blue-500/5 p-8 rounded-3xl max-w-sm flex flex-col items-center shadow-2xl backdrop-blur-md">
-          <div className="w-16 h-16 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-5 text-blue-400">
-            <Lock className="w-8 h-8" />
+        <div className="border border-white/[0.09] bg-[#0D1017]/90 p-8 rounded-3xl max-w-sm flex flex-col items-center shadow-2xl backdrop-blur-xl">
+          <div className="w-16 h-16 rounded-2xl bg-sky-500/10 border border-sky-400/25 flex items-center justify-center mb-5 text-sky-400">
+            <Lock className="w-7 h-7" />
           </div>
-          <h2 className="text-lg font-black uppercase tracking-wider text-white mb-2">Akses Terkunci</h2>
-          <p className="text-xs text-gray-400 leading-relaxed mb-6">
+          <h2 className="text-lg font-bold uppercase tracking-wider text-slate-100 mb-2">Akses Terkunci</h2>
+          <p className="text-xs text-slate-400 leading-relaxed mb-6">
             Shift ibadah ({currentShift?.name || "Aktif"}) sedang berlangsung dengan pembatasan keamanan. Silakan pindai QR Code resmi dari layar operator untuk mengakses.
           </p>
           <button
             onClick={openScanner}
-            className="w-full py-3.5 px-6 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full py-3.5 px-6 rounded-2xl bg-sky-600/90 hover:bg-sky-500 text-white font-bold text-xs uppercase tracking-widest transition-all shadow-[0_8px_24px_rgba(2,132,199,0.22)] active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
           >
             <QrCode className="w-4 h-4" />
             Pindai QR Code Ibadah
@@ -849,15 +849,15 @@ export default function ProjectorDisplay() {
 
   if (isSystemChecking) {
     return (
-      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
-        <div className="border border-white/10 bg-white/[0.02] p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-md">
-          <div className="w-14 h-14 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-5 text-blue-400">
+      <div className="bg-[#07080B] w-screen h-screen flex flex-col items-center justify-center text-slate-100 font-sans p-6 text-center">
+        <div className="border border-white/[0.09] bg-[#0D1017]/90 p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-xl">
+          <div className="w-14 h-14 rounded-2xl bg-sky-500/10 border border-sky-400/25 flex items-center justify-center mb-5 text-sky-400">
             <RefreshCw className="w-6 h-6 animate-spin" />
           </div>
-          <h2 className="text-base font-black uppercase tracking-wider text-white mb-2">
+          <h2 className="text-base font-bold uppercase tracking-wider text-slate-100 mb-2">
             Menghubungkan...
           </h2>
-          <p className="text-xs text-gray-400 leading-relaxed">
+          <p className="text-xs text-slate-400 leading-relaxed">
             Memeriksa status layanan ibadah aktif.
           </p>
         </div>
@@ -867,26 +867,26 @@ export default function ProjectorDisplay() {
 
   if (isSystemInactive) {
     return (
-      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
-        <div className="border border-amber-500/20 bg-amber-500/5 p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-md">
-          <div className="w-16 h-16 rounded-full bg-amber-500/10 border border-amber-500/25 flex items-center justify-center mb-5 text-amber-400">
-            <PowerOff className="w-8 h-8" />
+      <div className="bg-[#07080B] w-screen h-screen flex flex-col items-center justify-center text-slate-100 font-sans p-6 text-center">
+        <div className="border border-white/[0.09] bg-[#0D1017]/90 p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-xl">
+          <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.09] flex items-center justify-center mb-5 text-slate-300">
+            <PowerOff className="w-7 h-7" />
           </div>
-          <h2 className="text-lg font-black uppercase tracking-wider text-white mb-2">
+          <h2 className="text-lg font-bold uppercase tracking-wider text-slate-100 mb-2">
             System Nonaktif
           </h2>
-          <p className="text-xs text-gray-300 leading-relaxed mb-6">
+          <p className="text-xs text-slate-400 leading-relaxed mb-6">
             System nonaktif, tidak ada ibadah terdeteksi.
           </p>
           <button
             type="button"
             onClick={() => pingOperator()}
-            className="w-full py-3 px-5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-bold text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer mb-4"
+            className="w-full py-3 px-5 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.1] text-slate-100 font-bold text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer mb-4"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
             Periksa Ulang
           </button>
-          <div className="text-[10px] text-gray-500 font-mono uppercase tracking-widest border-t border-white/10 pt-4 w-full">
+          <div className="text-[10px] text-slate-500 font-mono uppercase tracking-widest border-t border-white/[0.07] pt-4 w-full">
             Church Presenter Cloud Sync
           </div>
         </div>
@@ -895,12 +895,12 @@ export default function ProjectorDisplay() {
   }
 
   if (!currentSlide) return (
-    <div className="bg-black w-screen h-screen flex flex-col items-center justify-center text-white/30 font-sans p-20">
-      <div className="border border-white/10 p-12 rounded-[2rem] flex flex-col items-center bg-white/[0.02]">
-        <AppLogo className="w-48 h-48 mb-8" showText={false} />
-        <h1 className="text-3xl font-black tracking-[0.2em] uppercase mb-3 text-white">Church Presenter</h1>
-        <div className="h-px w-32 bg-gradient-to-r from-transparent via-blue-500 to-transparent mb-6 opacity-50" />
-        <p className="text-sm font-mono tracking-[0.5em] opacity-40 uppercase">Waiting for Signal</p>
+    <div className="bg-[#07080B] w-screen h-screen flex flex-col items-center justify-center text-white/30 font-sans p-10 md:p-20">
+      <div className="border border-white/[0.08] p-12 rounded-3xl flex flex-col items-center bg-[#0D1017]/60 backdrop-blur-md">
+        <AppLogo className="w-40 h-40 mb-8" showText={false} />
+        <h1 className="text-2xl md:text-3xl font-black tracking-[0.2em] uppercase mb-3 text-slate-100">Church Presenter</h1>
+        <div className="h-px w-32 bg-gradient-to-r from-transparent via-sky-400/60 to-transparent mb-6" />
+        <p className="text-xs md:text-sm font-mono tracking-[0.45em] text-slate-500 uppercase">Waiting for Signal</p>
       </div>
     </div>
   );
@@ -1099,7 +1099,7 @@ export default function ProjectorDisplay() {
   const motionProps = getMotionVariant();
 
   return (
-    <div className={`relative w-screen h-screen overflow-hidden ${lowerThirdMode ? (chromaKeyColor === 'green' ? 'bg-[#00ff00]' : 'bg-transparent') : 'bg-black'} ${isLight ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
+    <div className={`slide-canvas-preserve relative w-screen h-screen overflow-hidden ${lowerThirdMode ? (chromaKeyColor === 'green' ? 'bg-[#00ff00]' : 'bg-transparent') : 'bg-black'} ${isLight ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
       <div className={`relative overflow-hidden flex items-center justify-center @container ${outputResolution === '4:3' ? 'aspect-[4/3] h-full max-w-full' : 'w-full h-full'} ${lowerThirdMode ? (chromaKeyColor === 'green' ? 'bg-[#00ff00]' : 'bg-transparent') : ''}`} style={{ containerType: 'inline-size' }}>
         {/* Background with intelligent color / image / video rendering support */}
       {!lowerThirdMode && (() => {
