@@ -14,14 +14,14 @@ const BIBLE_BOOKS_BATAK_GLOBAL: Record<string, string> = {
   "Yosua": "Josua", "Hakim-hakim": "Panguhum", "Rut": "Rut", "1 Samuel": "1 Samuel", "2 Samuel": "2 Samuel",
   "1 Raja-raja": "1 Raja-raja", "2 Raja-raja": "2 Raja-raja", "1 Tawarikh": "1 Kronika", "2 Tawarikh": "2 Kronika",
   "Ezra": "Esra", "Nehemia": "Nehemia", "Ester": "Ester", "Ayub": "Job", "Mazmur": "Psalmen", "Amsal": "Poda",
-  "Pengkhotbah": "Parjamita", "Kidung Agung": "Logulogu", "Yesaya": "Jesaya", "Yeremia": "Jeremia",
-  "Ratapan": "Andungabung", "Yehezkiel": "Hesekiel", "Daniel": "Daniel", "Hosea": "Hosea", "Yoel": "Joel",
+  "Pengkhotbah": "Parjamita", "Kidung Agung": "Angka Ende", "Yesaya": "Jesaya", "Yeremia": "Jeremia",
+  "Ratapan": "Andung-andung", "Yehezkiel": "Hesekiel", "Daniel": "Daniel", "Hosea": "Hosea", "Yoel": "Joel",
   "Amos": "Amos", "Obaja": "Obaja", "Yunus": "Jona", "Mikha": "Mika", "Nahum": "Nahum", "Habakuk": "Habakuk",
-  "Zefanya": "Sepania", "Hagai": "Hagai", "Zakharia": "Sakaria", "Maleakhi": "Maleaki",
+  "Zefanya": "Sepania", "Hagai": "Haggai", "Zakharia": "Sakaria", "Maleakhi": "Maleaki",
   "Matius": "Mateus", "Markus": "Markus", "Lukas": "Lukas", "Yohanes": "Johannes", "Kisah Para Rasul": "Ulaon ni Apostel",
-  "Roma": "Roma", "1 Korintus": "1 Korintus", "2 Korintus": "2 Korintus", "Galatia": "Galatia", "Efesus": "Efesus",
-  "Filipi": "Pilippi", "Kolose": "Kolosse", "1 Tesalonika": "1 Tesalonika", "2 Tesalonika": "2 Tesalonika",
-  "1 Timotius": "1 Timotius", "2 Timotius": "2 Timotius", "Titus": "Titus", "Filemon": "Pilemon", "Ibrani": "Heber",
+  "Roma": "Rom", "1 Korintus": "1 Korint", "2 Korintus": "2 Korint", "Galatia": "Galatia", "Efesus": "Epesus",
+  "Filipi": "Pilippi", "Kolose": "Kolosse", "1 Tesalonika": "1 Tessalonik", "2 Tesalonika": "2 Tessalonik",
+  "1 Timotius": "1 Timoteus", "2 Timotius": "2 Timoteus", "Titus": "Titus", "Filemon": "Pilemon", "Ibrani": "Heber",
   "Yakobus": "Jakobus", "1 Petrus": "1 Petrus", "2 Petrus": "2 Petrus", "1 Yohanes": "1 Johannes",
   "2 Yohanes": "2 Johannes", "3 Yohanes": "3 Johannes", "Yudas": "Judas", "Wahyu": "Pangungkapon"
 };
@@ -521,14 +521,14 @@ const scriptureCache = new Map<string, any>();
 
 // Temp multer storage for import files (.chr, .pptx, .ewsx, bible sqlite)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     const uploadsDir = path.join(process.cwd(), "uploads");
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
     cb(null, uploadsDir);
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     const timestamp = Date.now();
     const safeName = `${timestamp}-${file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
     cb(null, safeName);
@@ -583,10 +583,10 @@ function syncBackgroundsManifest(): { images: string[]; videos: string[] } {
 }
 
 const bgStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     cb(null, getBackgroundsFolderDir());
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     const cleanOrig = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
     const targetPath = path.join(getBackgroundsFolderDir(), cleanOrig);
     const finalName = fs.existsSync(targetPath)
@@ -617,7 +617,7 @@ async function startServer() {
   syncBackgroundsManifest();
 
   // Serve the dedicated backgrounds folder directly with CORS & range support
-  app.use("/backgrounds", (req, res, next) => {
+  app.use("/backgrounds", (_req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "*");
@@ -625,7 +625,7 @@ async function startServer() {
   }, express.static(backgroundsDir));
 
   // Serve legacy /uploads static files caught BEFORE the Vite dev middleware
-  app.use("/uploads", (req, res, next) => {
+  app.use("/uploads", (_req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "*");
@@ -643,8 +643,17 @@ async function startServer() {
 
   // Real-time state
   const activeOperators = new Set<string>();
+  const operatorAccountMap = new Map<string, string>();
+  const operatorStatusMap = new Map<string, { active: boolean; isLive: boolean; ts: number }>();
   const currentSlideMap = new Map<string, any>();
   const currentShiftMap = new Map<string, any>();
+
+  const hasActiveOperatorForAccount = (accountId: string) => {
+    for (const acc of operatorAccountMap.values()) {
+      if (acc === accountId) return true;
+    }
+    return false;
+  };
 
   // GET endpoint to fetch current active shift
   app.get("/api/current-shift", (req: any, res: any) => {
@@ -677,7 +686,7 @@ async function startServer() {
   });
 
   // Get local custom bibles from public/bibles folder
-  app.get("/api/local-bibles", (req, res) => {
+  app.get("/api/local-bibles", (_req, res) => {
     try {
       const biblesDir = path.join(process.cwd(), "public", "bibles");
       if (!fs.existsSync(biblesDir)) {
@@ -714,7 +723,7 @@ async function startServer() {
   });
 
   // Get custom backgrounds from the single dedicated public/backgrounds folder
-  app.get("/api/local-backgrounds", (req, res) => {
+  app.get("/api/local-backgrounds", (_req, res) => {
     try {
       const manifest = syncBackgroundsManifest();
       return res.json(manifest);
@@ -744,7 +753,7 @@ async function startServer() {
   });
 
   // Accounts Management Endpoint
-  app.get("/api/accounts", (req, res) => {
+  app.get("/api/accounts", (_req, res) => {
     try {
       const p = path.join(process.cwd(), "uploads", "accounts.json");
       if (fs.existsSync(p)) {
@@ -999,7 +1008,6 @@ async function startServer() {
             let match;
             const scraperVerses = [];
             while ((match = verseRegex.exec(html)) !== null) {
-              const verseNum = parseInt(match[1]);
               const blockContent = match[2];
               const pMatch = blockContent.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
               const text = pMatch ? pMatch[1].replace(/<[^>]*>/g, "").trim() : "";
@@ -2387,6 +2395,36 @@ ${text}
     }
   });
 
+  app.get("/api/hkbp", async (req, res) => {
+    const rawEndpoint = Array.isArray(req.query?.endpoint)
+      ? req.query.endpoint[0]
+      : req.query?.endpoint;
+    const endpoint = String(rawEndpoint || "").replace(/^\/+/, "").trim();
+    if (!/^(buku-ende|buku-nyanyian)\/songs(\/[a-zA-Z0-9_-]+)?$/.test(endpoint)) {
+      return res.status(400).json({ error: "Invalid HKBP endpoint" });
+    }
+    try {
+      const targetUrl = `https://api.hkbp.or.id/api/v1/${endpoint}`;
+      const upstream = await fetch(targetUrl, {
+        headers: {
+          Origin: "https://hkbp.or.id",
+          Referer: "https://hkbp.or.id/",
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 (compatible; ChurchPresenter/1.0)",
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!upstream.ok) {
+        return res.status(upstream.status).json({ error: `HKBP upstream HTTP ${upstream.status}` });
+      }
+      const data = await upstream.json();
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(502).json({ error: err?.message || "Failed to fetch from HKBP API" });
+    }
+  });
+
   app.post("/api/ai/scripture", async (req, res) => {
     const { query, book, chapter, version, displayBook } = req.body;
     const bibleVersion = version || "tb";
@@ -2395,9 +2433,7 @@ ${text}
     const versionLabel = isBatak ? "Batak Toba" : isGNTD ? "Good News (GNTD)" : "Terjemahan Baru (TB)";
     const bookTitle = displayBook || book;
     
-    // Mapping for Batak book names for API compatibility
-    const BIBLE_BOOKS_BATAK_local = BIBLE_BOOKS_BATAK_GLOBAL;
-        // Mapping for Bible Slugs (English) for API compatibility
+    // Mapping for Bible Slugs (English) for API compatibility
     const BIBLE_SLUGS: Record<string, string> = {
       "Kejadian": "genesis", "Keluaran": "exodus", "Imamat": "leviticus", "Bilangan": "numbers", "Ulangan": "deuteronomy",
       "Yosua": "joshua", "Hakim-hakim": "judges", "Rut": "rut", "1 Samuel": "1samuel", "2 Samuel": "2samuel",
@@ -2465,7 +2501,6 @@ ${text}
     
     // If book and chapter are provided, use real Alkitab API for accuracy
     if (book && chapter) {
-      const startTime = Date.now();
       try {
         const fetchOptions = {
           headers: {
@@ -2474,7 +2509,36 @@ ${text}
           }
         };
 
-        // Scraper fallback specifically requested by user for alkitab.me/bbc-toba
+        // 0. Primary source: HKBP Alkitab CDN (https://hkbp.or.id/alkitab) separating pericope titles from verses
+        if (!isGNTD) {
+          try {
+            const matchedBatakEntry = Object.entries(BIBLE_BOOKS_BATAK_GLOBAL).find(
+              ([, v]) => v.toLowerCase() === String(book).trim().toLowerCase()
+            );
+            const canonicalIndoBook = matchedBatakEntry ? matchedBatakEntry[0] : String(book).trim();
+            const hkbpSlug = canonicalIndoBook.replace(/\s+/g, "");
+            const hkbpVer = isBatak ? "toba" : "tb";
+            const hkbpUrl = `https://cdn.jsdelivr.net/gh/pandapotan/ktb@main/bib/${hkbpVer}/book/${encodeURIComponent(hkbpSlug)}/${chapter}.json`;
+            const hkbpRes = await fetch(hkbpUrl, { signal: AbortSignal.timeout(6000) });
+            if (hkbpRes.ok) {
+              const hkbpJson = await hkbpRes.json() as any;
+              const rawEntries = Array.isArray(hkbpJson?.verses) ? hkbpJson.verses : [];
+              const verseOnly = rawEntries.filter((entry: any) => String(entry?.type || "content").toLowerCase() !== "title" && entry?.text);
+              if (verseOnly.length > 0) {
+                const formatted = verseOnly.map((entry: any) => ({
+                  title: `${bookTitle} ${chapter}:${entry.verse}`,
+                  content: String(entry.text).trim()
+                }));
+                scriptureCache.set(cacheKey, formatted);
+                return res.json(formatted);
+              }
+            }
+          } catch (hkbpErr) {
+            console.warn("HKBP Alkitab CDN fetch failed, falling back:", hkbpErr);
+          }
+        }
+
+        // Scraper fallback for alkitab.me/bbc-toba
         if (isBatak) {
           try {
             const tobaBook = BIBLE_BOOKS_BATAK_GLOBAL[book] || book;
@@ -2763,6 +2827,9 @@ ${text}
       socket.leave("room_" + clientAccountId);
       clientAccountId = targetAccount;
       socket.join("room_" + clientAccountId);
+      if (activeOperators.has(socket.id)) {
+        operatorAccountMap.set(socket.id, clientAccountId);
+      }
 
       const slide = currentSlideMap.get(clientAccountId) || {
         content: "Selamat Datang di Ibadah Hari Ini",
@@ -2777,9 +2844,19 @@ ${text}
         endTime: "",
         token: ""
       };
+      const hasOp = hasActiveOperatorForAccount(clientAccountId);
+      const storedOpStatus = operatorStatusMap.get(clientAccountId);
+      const opStatus = hasOp
+        ? {
+            active: storedOpStatus ? storedOpStatus.active : true,
+            isLive: storedOpStatus ? storedOpStatus.isLive : slide.isLive !== false,
+            ts: Date.now(),
+          }
+        : { active: false, isLive: false, ts: Date.now() };
 
-      socket.emit("slide:update", slide);
+      socket.emit("slide:update", hasOp ? slide : { ...slide, isLive: false });
       socket.emit("shift:update", shift);
+      socket.emit("operator:status", opStatus);
     });
 
     // Default join room_acc_default
@@ -2788,8 +2865,36 @@ ${text}
     // Emit initial count
     io.emit("clients:count", io.engine.clientsCount);
 
-    socket.on("register:operator", () => {
+    socket.on("register:operator", (data?: { accountId?: string; isLive?: boolean }) => {
+      const accId = data?.accountId || clientAccountId;
       activeOperators.add(socket.id);
+      operatorAccountMap.set(socket.id, accId);
+      const statusPayload = {
+        active: true,
+        isLive: data?.isLive !== false,
+        ts: Date.now(),
+      };
+      operatorStatusMap.set(accId, statusPayload);
+      io.to("room_" + accId).emit("operator:status", statusPayload);
+    });
+
+    socket.on("operator:status", (data: { accountId?: string; active?: boolean; isLive?: boolean }) => {
+      const accId = data?.accountId || clientAccountId;
+      const isOpActive = Boolean(data?.active);
+      if (isOpActive) {
+        activeOperators.add(socket.id);
+        operatorAccountMap.set(socket.id, accId);
+      } else {
+        activeOperators.delete(socket.id);
+        operatorAccountMap.delete(socket.id);
+      }
+      const statusPayload = {
+        active: isOpActive,
+        isLive: isOpActive ? data?.isLive !== false : false,
+        ts: Date.now(),
+      };
+      operatorStatusMap.set(accId, statusPayload);
+      io.to("room_" + accId).emit("operator:status", statusPayload);
     });
 
     socket.on("slide:change", (data: any) => {
@@ -2808,13 +2913,18 @@ ${text}
 
     socket.on("disconnect", () => {
       if (activeOperators.has(socket.id)) {
+        const opAcc = operatorAccountMap.get(socket.id) || clientAccountId;
         activeOperators.delete(socket.id);
-        if (activeOperators.size === 0) {
-          const slide = currentSlideMap.get(clientAccountId);
+        operatorAccountMap.delete(socket.id);
+        if (!hasActiveOperatorForAccount(opAcc)) {
+          const offlineStatus = { active: false, isLive: false, ts: Date.now() };
+          operatorStatusMap.set(opAcc, offlineStatus);
+          io.to("room_" + opAcc).emit("operator:status", offlineStatus);
+          const slide = currentSlideMap.get(opAcc);
           if (slide) {
             const updatedSlide = { ...slide, isLive: false };
-            currentSlideMap.set(clientAccountId, updatedSlide);
-            io.to("room_" + clientAccountId).emit("slide:update", updatedSlide);
+            currentSlideMap.set(opAcc, updatedSlide);
+            io.to("room_" + opAcc).emit("slide:update", updatedSlide);
           }
         }
       }
@@ -2832,7 +2942,7 @@ ${text}
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

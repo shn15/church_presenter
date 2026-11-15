@@ -88,10 +88,19 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+export interface OperatorStatus {
+  active: boolean;
+  isLive: boolean;
+  ts: number;
+  senderId?: string;
+  replyTo?: string;
+}
+
 interface CloudSyncCallbacks {
   onSlide?: (slide: Slide, ts: number) => void;
   onShift?: (shift: Shift, ts: number) => void;
   onSettings?: (settings: SyncedSettings, ts: number) => void;
+  onOperatorStatus?: (status: OperatorStatus) => void;
   onMediaReceived?: (mediaPath: string) => void;
 }
 
@@ -107,6 +116,11 @@ export class CloudSyncClient {
   private lastSlideTs = 0;
   private lastShiftTs = 0;
   private lastSettingsTs = 0;
+  private lastStatusTs = 0;
+  private subscribedAt = 0;
+  private lastPingId = "";
+  private currentStatus: OperatorStatus | null = null;
+  private lastPublishedSlide: Slide | null = null;
 
   private requestedMedia = new Map<string, number>();
   private queuedMediaRequests = new Set<string>();
@@ -149,7 +163,22 @@ export class CloudSyncClient {
         clean: true,
         reconnectPeriod: 4000,
         connectTimeout: 8000,
-        keepalive: 30,
+        keepalive: 20,
+        ...(this.isOperatorMode
+          ? {
+              will: {
+                topic: `${this.prefix}/status`,
+                payload: JSON.stringify({
+                  active: false,
+                  isLive: false,
+                  ts: Date.now(),
+                  senderId: this.clientId,
+                }),
+                qos: 1,
+                retain: true,
+              },
+            }
+          : {}),
       });
 
       this.client = client;
@@ -170,13 +199,21 @@ export class CloudSyncClient {
           `${this.prefix}/slide`,
           `${this.prefix}/shift`,
           `${this.prefix}/settings`,
+          `${this.prefix}/status`,
           `${this.prefix}/media-chunk/+`,
           `${this.prefix}/webrtc/${this.clientId}`,
         ];
         if (this.isOperatorMode) {
           topics.push(`${this.prefix}/media-req`);
+          topics.push(`${this.prefix}/ping`);
         }
         client.subscribe(topics, { qos: 1 }, () => {
+          this.subscribedAt = Date.now();
+          if (this.isOperatorMode && this.currentStatus) {
+            this.publishOperatorStatus(this.currentStatus);
+          } else if (!this.isOperatorMode) {
+            this.pingOperator();
+          }
           if (this.queuedMediaRequests.size > 0) {
             const pending = Array.from(this.queuedMediaRequests);
             this.queuedMediaRequests.clear();
@@ -232,6 +269,46 @@ export class CloudSyncClient {
       return;
     }
 
+    if (topic === `${p}/status` && data && typeof data.active === "boolean") {
+      if (data.senderId === this.clientId) return;
+      const ts = typeof data.ts === "number" ? data.ts : Date.now();
+      const isDirectReply = Boolean(data.replyTo && data.replyTo === this.lastPingId);
+      const isLivePushAfterSubscribe =
+        this.subscribedAt > 0 && Date.now() - this.subscribedAt > 1200;
+
+      // Always accept explicit inactive status immediately; for active status, require
+      // either a direct reply to our ping or a live push after initial retained flush.
+      if (!data.active || isDirectReply || isLivePushAfterSubscribe) {
+        if (ts >= this.lastStatusTs || !data.active || isDirectReply) {
+          this.lastStatusTs = ts;
+          this.callbacks.onOperatorStatus?.({
+            active: Boolean(data.active),
+            isLive: data.isLive !== false,
+            ts,
+            senderId: data.senderId,
+            replyTo: data.replyTo,
+          });
+        }
+      }
+      return;
+    }
+
+    if (topic === `${p}/ping` && this.isOperatorMode) {
+      if (this.currentStatus) {
+        this.publishOperatorStatus(
+          {
+            active: this.currentStatus.active,
+            isLive: this.currentStatus.isLive,
+          },
+          data?.pingId
+        );
+        if (this.currentStatus.active && this.lastPublishedSlide) {
+          this.publishSlide(this.lastPublishedSlide);
+        }
+      }
+      return;
+    }
+
     if (topic === `${p}/media-req` && this.isOperatorMode && data?.url) {
       if (data.requesterId === this.clientId) return;
       await this.serveMediaRequest(data);
@@ -249,9 +326,45 @@ export class CloudSyncClient {
     }
   }
 
+  public publishOperatorStatus(
+    status: { active: boolean; isLive: boolean },
+    replyTo?: string
+  ) {
+    const ts = Date.now();
+    this.lastStatusTs = ts;
+    const payload: OperatorStatus = {
+      active: status.active,
+      isLive: status.isLive,
+      ts,
+      senderId: this.clientId,
+      ...(replyTo ? { replyTo } : {}),
+    };
+    this.currentStatus = payload;
+    if (this.client?.connected) {
+      this.client.publish(
+        `${this.prefix}/status`,
+        JSON.stringify(payload),
+        { qos: status.active ? 1 : 0, retain: true }
+      );
+    }
+  }
+
+  public pingOperator() {
+    if (this.client?.connected) {
+      const pingId = `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      this.lastPingId = pingId;
+      this.client.publish(
+        `${this.prefix}/ping`,
+        JSON.stringify({ requesterId: this.clientId, pingId, ts: Date.now() }),
+        { qos: 0 }
+      );
+    }
+  }
+
   public publishSlide(slide: Slide) {
     const ts = Date.now();
     this.lastSlideTs = ts;
+    this.lastPublishedSlide = slide;
     if (this.client?.connected) {
       this.client.publish(
         `${this.prefix}/slide`,
@@ -578,6 +691,20 @@ export class CloudSyncClient {
   }
 
   public destroy() {
+    if (this.isOperatorMode && this.client?.connected) {
+      try {
+        this.client.publish(
+          `${this.prefix}/status`,
+          JSON.stringify({
+            active: false,
+            isLive: false,
+            ts: Date.now(),
+            senderId: this.clientId,
+          }),
+          { qos: 0, retain: true }
+        );
+      } catch {}
+    }
     this.destroyed = true;
     for (const pc of this.peerConnections.values()) {
       try {
@@ -586,7 +713,7 @@ export class CloudSyncClient {
     }
     this.peerConnections.clear();
     try {
-      this.client?.end(true);
+      this.client?.end(false);
     } catch {}
     this.client = null;
   }

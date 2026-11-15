@@ -4,7 +4,6 @@ import logoUrl from '../assets/images/Logo_2.jpeg';
 
 export const AppLogo = ({ 
   className = "w-10 h-10", 
-  showText = true, 
   bgWhiteSquare = false 
 }: { 
   className?: string; 

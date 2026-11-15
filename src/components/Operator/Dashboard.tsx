@@ -12,7 +12,7 @@ import { useSocket } from "../../hooks/useSocket";
 import { Slide, Song, ScheduleItem, CustomBible } from "../../types";
 import { useNavigate } from "react-router-dom";
 import { getPublicUrl, openProjectorExtendWindow } from "../../lib/projectorUtils";
-import { getActiveAccount, getItemAccount, setItemAccount } from "../../lib/accountManager";
+import { getActiveAccount, getItemAccount } from "../../lib/accountManager";
 import {
   Search,
   Play,
@@ -27,13 +27,10 @@ import {
   XCircle,
   Square,
   Eye,
-  Share2,
-  Smartphone,
   QrCode,
   Book,
   Plus,
   Trash,
-  GripVertical,
   Edit2,
   Save,
   FolderOpen,
@@ -49,23 +46,26 @@ import {
   KeyRound,
   Clock,
   Lock,
-  Calendar,
-  Database,
   Copy,
-  AlertTriangle,
   Loader2,
-  Sparkles,
-  ArrowUpDown,
   Hash,
   CaseSensitive,
-  FileCode,
-  Sun,
-  Moon,
   ChevronDown,
   ExternalLink,
   Globe,
 } from "lucide-react";
-import { BIBLE_BOOKS, BIBLE_BOOKS_BATAK } from "../../constants/bible";
+import {
+  BIBLE_BOOKS,
+  BIBLE_BOOKS_BATAK,
+  resolveCanonicalIndoBook,
+} from "../../constants/bible";
+import {
+  HKBP_SOURCE_URLS,
+  HkbpSongCatalogItem,
+  fetchHkbpBibleChapter,
+  fetchHkbpSongCatalog,
+  fetchHkbpSongDetail,
+} from "../../lib/hkbpSource";
 import { motion, AnimatePresence } from "motion/react";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -186,40 +186,6 @@ const isLightBg = (bg: string | undefined): boolean => {
 
   return false;
 };
-
-const MOCK_SONGS: Song[] = [
-  {
-    id: "1",
-    title: "Satu Hal yang Kurindu",
-    artist: "True Worshippers",
-    verses: [
-      "Satu hal yang kurindu\nBerdiam di dalam rumah-Mu",
-      "Satu hal yang kupinta\nMenikmati bait-Mu",
-      "Tuk memandang wajah-Mu\nDan memuji nama-Mu",
-      "Bait-Mu tempat kediaman-Mu\nTempat kesukaan-Mu",
-      "Satu hal yang kurindu\nBerdiam di dalam rumah-Mu",
-    ],
-  },
-  {
-    id: "2",
-    title: "Nyanyi Bagi Dia",
-    artist: "Hillsong",
-    verses: [
-      "Angkatlah suaramu\nNyanyi bagi Dia",
-      "Tepuklah tanganmu\nMulia kan Raja",
-      "S'bab Dia yang layak\nT'rima pujian",
-      "Yesus Tuhan... Raja segala raja",
-    ],
-  },
-  {
-    id: "3",
-    title: "1 Yohanes 4:8",
-    artist: "Alkitab",
-    verses: [
-      "Barangsiapa tidak mengasihi, ia tidak mengenal Allah, sebab Allah adalah kasih.",
-    ],
-  },
-];
 
 const BACKGROUNDS: string[] = [];
 
@@ -385,6 +351,7 @@ export default function OperatorDashboard() {
   ): string[] => {
     let verseCount = 0;
     let bioCount = 0;
+    const usesBait = currentLabels?.some((l) => /^bait\s+\d+/i.test(l || ""));
 
     return verses.map((verseText, idx) => {
       const existingLabel = currentLabels?.[idx];
@@ -396,20 +363,22 @@ export default function OperatorDashboard() {
 
       if (isBible) {
         bioCount++;
+        if (existingLabel && /^Ayat\s+\d+$/i.test(existingLabel)) {
+          return existingLabel;
+        }
         return `Ayat ${bioCount}`;
       } else {
         // It's a song
-        // Check if it should be a Chorus
         const isChorus =
-          /reff|chorus|reffrain|paduan\s*suara/i.test(verseText) ||
+          /^(?:reff|chorus|reffrain|refrain|paduan\s*suara)\b/i.test(verseText.trim()) ||
           (existingLabel &&
-            /reff|chorus|reffrain|paduan\s*suara|reff/i.test(existingLabel));
+            /reff|chorus|reffrain|refrain|paduan\s*suara/i.test(existingLabel));
 
         if (isChorus) {
-          return "Chorus";
+          return existingLabel && /^reff/i.test(existingLabel) ? "Reff" : usesBait ? "Reff" : "Chorus";
         } else {
           verseCount++;
-          return `Verse ${verseCount}`;
+          return usesBait ? `Bait ${verseCount}` : `Verse ${verseCount}`;
         }
       }
     });
@@ -487,6 +456,7 @@ export default function OperatorDashboard() {
     syncSettings,
     mediaUpdateTick,
     notifyMediaUpdated,
+    publishOperatorStatus,
   } = useSocket();
   const changeSlide = useCallback(
     (slide: Slide) => {
@@ -499,9 +469,39 @@ export default function OperatorDashboard() {
     [origChangeSlide, isLive],
   );
 
+  const isLiveRef = useRef(isLive);
+  useEffect(() => {
+    isLiveRef.current = isLive;
+    publishOperatorStatus(true, isLive);
+  }, [isLive, publishOperatorStatus]);
+
+  useEffect(() => {
+    publishOperatorStatus(true, isLiveRef.current);
+    const heartbeat = window.setInterval(() => {
+      publishOperatorStatus(true, isLiveRef.current);
+    }, 8000);
+
+    const handlePageHide = () => {
+      publishOperatorStatus(false, false);
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
+
+    return () => {
+      window.clearInterval(heartbeat);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      publishOperatorStatus(false, false);
+    };
+  }, [publishOperatorStatus]);
+
   useEffect(() => {
     if (socket) {
-      socket.emit("register:operator");
+      socket.emit("register:operator", {
+        accountId: currentAccountId,
+        isLive: isLiveRef.current,
+      });
+      publishOperatorStatus(true, isLiveRef.current);
       if (currentSlide) {
         origChangeSlide({
           ...currentSlide,
@@ -509,7 +509,7 @@ export default function OperatorDashboard() {
         });
       }
     }
-  }, [socket]);
+  }, [socket, currentAccountId, publishOperatorStatus]);
   const [search, setSearch] = useState("");
   const [songSortMode, setSongSortMode] = useState<
     "default" | "alphabetical" | "edited" | "number"
@@ -557,6 +557,8 @@ export default function OperatorDashboard() {
     return [];
   });
 
+  const prevBlobUrlsRef = useRef<string[]>([]);
+
   useEffect(() => {
     let active = true;
     const loadIndexedDBMedia = async () => {
@@ -569,6 +571,7 @@ export default function OperatorDashboard() {
         if (!active) return;
 
         const mapping: Record<string, string> = {};
+        const createdUrls: string[] = [];
         const discoveredImages: string[] = [];
         const discoveredVideos: string[] = [];
 
@@ -577,6 +580,7 @@ export default function OperatorDashboard() {
             let localUrl = "";
             if (item.file instanceof Blob && item.file.size > 0) {
               localUrl = URL.createObjectURL(item.file);
+              createdUrls.push(localUrl);
             }
             if (!localUrl) return;
 
@@ -618,7 +622,14 @@ export default function OperatorDashboard() {
           }
         });
 
+        const oldUrls = prevBlobUrlsRef.current;
+        prevBlobUrlsRef.current = createdUrls;
         setMediaMapping(mapping);
+        if (oldUrls.length > 0) {
+          window.setTimeout(() => {
+            oldUrls.forEach((u) => URL.revokeObjectURL(u));
+          }, 500);
+        }
 
         // Restore custom images and videos from the dedicated /backgrounds/ folder, OPFS/IndexedDB & persistent storage
         const mergedImages = Array.from(
@@ -655,6 +666,13 @@ export default function OperatorDashboard() {
       active = false;
     };
   }, [currentAccountId, mediaUpdateTick]);
+
+  useEffect(() => {
+    return () => {
+      prevBlobUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      prevBlobUrlsRef.current = [];
+    };
+  }, []);
 
   const resolveMedia = useCallback(
     (url?: string) => {
@@ -877,11 +895,6 @@ export default function OperatorDashboard() {
   const [aiResults, setAiResults] = useState<Song[]>([]);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [showNewSubmenu, setShowNewSubmenu] = useState(false);
-  const [showNewWizardModal, setShowNewWizardModal] = useState(false);
-  const [newWizardType, setNewWizardType] = useState<
-    "song" | "bible" | "slide"
-  >("song");
-  const [newWizardTitle, setNewWizardTitle] = useState("");
   const [showShareModal, setShowShareModal] = useState(false);
   const [showProjectionDropdown, setShowProjectionDropdown] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -926,16 +939,13 @@ export default function OperatorDashboard() {
   const [activeTab, setActiveTab] = useState<
     "library" | "bible" | "schedule" | "presentations"
   >("library");
-  const [bibleVersion, setBibleVersion] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem("cp_custom_bibles");
-      const bibles = saved ? JSON.parse(saved) : [];
-      if (bibles && bibles.length > 0) {
-        return bibles[0].id;
-      }
-    } catch (e) {}
-    return "";
-  });
+  const [songSourceTab, setSongSourceTab] = useState<"local" | "be" | "bn">("local");
+  const [hkbpBeCatalog, setHkbpBeCatalog] = useState<HkbpSongCatalogItem[]>([]);
+  const [hkbpBnCatalog, setHkbpBnCatalog] = useState<HkbpSongCatalogItem[]>([]);
+  const [isLoadingHkbpCatalog, setIsLoadingHkbpCatalog] = useState(false);
+  const [hkbpCatalogError, setHkbpCatalogError] = useState<string | null>(null);
+  const [loadingHkbpSongKey, setLoadingHkbpSongKey] = useState<string | null>(null);
+  const [bibleVersion, setBibleVersion] = useState<string>("tb");
   const [selectedBibleBook, setSelectedBibleBook] = useState("Kejadian"); // Default to Genesis/Kejadian or first book of the custom Bible
   const [selectedBibleChapter, setSelectedBibleChapter] = useState(1);
   const [chapterInput, setChapterInput] = useState("1");
@@ -961,7 +971,7 @@ export default function OperatorDashboard() {
     selectAllScheduleRef.current = selectAllSchedule;
     selectAllLibraryRef.current = selectAllLibrary;
     selectAllBibleRef.current = selectAllBible;
-  }, []);
+  });
   const [isFetchingBible, setIsFetchingBible] = useState(false);
   const [bibleError, setBibleError] = useState<string | null>(null);
   const currentBibleContext = useRef("");
@@ -1148,7 +1158,7 @@ export default function OperatorDashboard() {
   // Toggle browser fullscreen safely
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch((err) => {
+      document.documentElement.requestFullscreen().catch(() => {
         showToast(
           "Layar penuh tidak didukung di frame ini, silakan buka di tab baru.",
           "warn",
@@ -1443,102 +1453,6 @@ export default function OperatorDashboard() {
   const [showBibleDbModal, setShowBibleDbModal] = useState(false);
   const [showSongDbModal, setShowSongDbModal] = useState(false);
 
-  // EasyWorship Importer States and Utilities
-  const [isImportingBible, setIsImportingBible] = useState(false);
-  const [isImportingSongs, setIsImportingSongs] = useState(false);
-
-  // Dynamic SQL.js dynamic script loader
-  const loadSqlJs = () => {
-    return new Promise<any>((resolve, reject) => {
-      if ((window as any).initSqlJs) {
-        resolve((window as any).initSqlJs);
-        return;
-      }
-      const script = document.createElement("script");
-      script.src =
-        "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.2/sql-wasm.js";
-      script.async = true;
-      script.onload = () => {
-        if ((window as any).initSqlJs) {
-          resolve((window as any).initSqlJs);
-        } else {
-          reject(new Error("initSqlJs not found on window"));
-        }
-      };
-      script.onerror = () => {
-        const fallbackScript = document.createElement("script");
-        fallbackScript.src = "https://unpkg.com/sql.js@1.6.2/dist/sql-wasm.js";
-        fallbackScript.async = true;
-        fallbackScript.onload = () => {
-          resolve((window as any).initSqlJs);
-        };
-        fallbackScript.onerror = () => {
-          reject(new Error("Failed to load sql.js from CDNs"));
-        };
-        document.body.appendChild(fallbackScript);
-      };
-      document.body.appendChild(script);
-    });
-  };
-
-  // RTF Clean function to retrieve plain-text lyrics from EasyWorship Words
-  const cleanEWRtf = (rtf: string): string => {
-    if (!rtf) return "";
-    let text = rtf;
-    text = text.replace(/\\par/gi, "\n");
-    text = text.replace(/\\line/gi, "\n");
-    text = text.replace(/\\tab/gi, "\t");
-    text = text.replace(/\{\\\*[\s\S]*?\}/g, "");
-    text = text.replace(/\{\\fonttbl[\s\S]*?\}/g, "");
-    text = text.replace(/\{\\colortbl[\s\S]*?\}/g, "");
-    text = text.replace(/\{\\stylesheet[\s\S]*?\}/g, "");
-    text = text.replace(/\{\\info[\s\S]*?\}/g, "");
-    text = text.replace(/\\([a-z]{1,32})(-?\d+)? ?/gi, "");
-    text = text.replace(/\\'[0-9a-f]{2}/gi, "");
-    text = text.replace(/[{}]/g, "");
-    text = text.replace(/\r\n/g, "\n");
-    text = text.replace(/\n{3,}/g, "\n\n");
-    return text.trim();
-  };
-
-  // Slide parser to divide EasyWorship song body into separate Slides
-  const parseEWSongVerses = (plainText: string) => {
-    const blocks = plainText.split(/\n\s*\n+/);
-    const verses: string[] = [];
-    const verseLabels: string[] = [];
-    let defaultIndex = 1;
-
-    blocks.forEach((block) => {
-      const trimmedBlock = block.trim();
-      if (!trimmedBlock) return;
-      const lines = trimmedBlock.split("\n").map((l) => l.trim());
-      const firstLine = lines[0];
-      const isLabel =
-        /^(verse|chorus|bridge|tag|ending|pre-chorus|refrain|slide|v\d+|c\d+|b\d+|split|reff|bait|bait\s+\d+|reff\s+\d+)/i.test(
-          firstLine,
-        ) ||
-        (firstLine.startsWith("[") && firstLine.endsWith("]"));
-
-      if (isLabel && lines.length > 1) {
-        const cleanLabel = firstLine.replace(/[\[\]]/g, "").trim();
-        verseLabels.push(cleanLabel);
-        verses.push(lines.slice(1).join("\n"));
-      } else {
-        verseLabels.push(`Verse ${defaultIndex}`);
-        verses.push(trimmedBlock);
-        defaultIndex++;
-      }
-    });
-
-    if (verses.length === 0) {
-      verses.push(plainText);
-      verseLabels.push("Verse 1");
-    }
-
-    const finalLabels = regenerateSlideLabels(verses, verseLabels, false);
-    return { verses, verseLabels: finalLabels };
-  };
-
   // Parse Plain Text songs compiled or copy-pasted (extremely robust)
   const parseTextSongs = (rawText: string): Song[] => {
     if (!rawText || !rawText.trim()) return [];
@@ -1697,162 +1611,14 @@ export default function OperatorDashboard() {
     return parsedSongs;
   };
 
-  // Normalize/Translate English and Abbreviated Book names to Indonesian equivalent
-  const normalizeBibleBookName = (id: number, name: string): string => {
-    const EW_BOOK_ID_MAP: { [key: number]: string } = {
-      1: "Kejadian",
-      2: "Keluaran",
-      3: "Imamat",
-      4: "Bilangan",
-      5: "Ulangan",
-      6: "Yosua",
-      7: "Hakim-hakim",
-      8: "Rut",
-      9: "1 Samuel",
-      10: "2 Samuel",
-      11: "1 Raja-raja",
-      12: "2 Raja-raja",
-      13: "1 Tawarikh",
-      14: "2 Tawarikh",
-      15: "Ezra",
-      16: "Nehemia",
-      17: "Ester",
-      18: "Ayub",
-      19: "Mazmur",
-      20: "Amsal",
-      21: "Pengkhotbah",
-      22: "Kidung Agung",
-      23: "Yesaya",
-      24: "Yeremia",
-      25: "Ratapan",
-      26: "Yehezkiel",
-      27: "Daniel",
-      28: "Hosea",
-      29: "Yoel",
-      30: "Amos",
-      31: "Obaja",
-      32: "Yunus",
-      33: "Mikha",
-      34: "Nahum",
-      35: "Habakuk",
-      36: "Zefanya",
-      37: "Hagai",
-      38: "Zakharia",
-      39: "Maleakhi",
-      40: "Matius",
-      41: "Markus",
-      42: "Lukas",
-      43: "Yohanes",
-      44: "Kisah Para Rasul",
-      45: "Roma",
-      46: "1 Korintus",
-      47: "2 Korintus",
-      48: "Galatia",
-      49: "Efesus",
-      50: "Filipi",
-      51: "Kolose",
-      52: "1 Tesalonika",
-      53: "2 Tesalonika",
-      54: "1 Timotius",
-      55: "2 Timotius",
-      56: "Titus",
-      57: "Filemon",
-      58: "Ibrani",
-      59: "Yakobus",
-      60: "1 Petrus",
-      61: "2 Petrus",
-      62: "1 Yohanes",
-      63: "2 Yohanes",
-      64: "3 Yohanes",
-      65: "Yudas",
-      66: "Wahyu",
-    };
-
-    const EW_BOOK_NAME_MAP: { [key: string]: string } = {
-      genesis: "Kejadian",
-      exodus: "Keluaran",
-      leviticus: "Imamat",
-      numbers: "Bilangan",
-      deuteronomy: "Ulangan",
-      joshua: "Yosua",
-      judges: "Hakim-hakim",
-      ruth: "Rut",
-      "1 samuel": "1 Samuel",
-      "2 samuel": "2 Samuel",
-      "1 kings": "1 Raja-raja",
-      "2 kings": "2 Raja-raja",
-      "1 chronicles": "1 Tawarikh",
-      "2 chronicles": "2 Tawarikh",
-      ezra: "Ezra",
-      nehemiah: "Nehemia",
-      esther: "Ester",
-      job: "Ayub",
-      psalms: "Mazmur",
-      proverbs: "Amsal",
-      ecclesiastes: "Pengkhotbah",
-      "song of solomon": "Kidung Agung",
-      isaiah: "Yesaya",
-      jeremiah: "Yeremia",
-      lamentations: "Ratapan",
-      ezekiel: "Yehezkiel",
-      daniel: "Daniel",
-      hosea: "Hosea",
-      joel: "Yoel",
-      amos: "Amos",
-      obadiah: "Obaja",
-      jonah: "Yunus",
-      micah: "Mikha",
-      nahum: "Nahum",
-      habakkuk: "Habakuk",
-      zephaniah: "Zefanya",
-      haggai: "Hagai",
-      zechariah: "Zakharia",
-      malachi: "Maleakhi",
-      matthew: "Matius",
-      mark: "Markus",
-      luke: "Lukas",
-      john: "Yohanes",
-      acts: "Kisah Para Rasul",
-      romans: "Roma",
-      "1 corinthians": "1 Korintus",
-      "2 corinthians": "2 Korintus",
-      galatians: "Galatia",
-      ephesians: "Efesus",
-      philippians: "Filipi",
-      colossians: "Kolose",
-      "1 thessalonians": "1 Tesalonika",
-      "2 thessalonians": "2 Tesalonika",
-      "1 timothy": "1 Timotius",
-      "2 timothy": "2 Timotius",
-      titus: "Titus",
-      philemon: "Filemon",
-      hebrews: "Ibrani",
-      james: "Yakobus",
-      "1 peter": "1 Petrus",
-      "2 peter": "2 Petrus",
-      "1 john": "1 Yohanes",
-      "2 john": "2 Yohanes",
-      "3 john": "3 Yohanes",
-      jude: "Yudas",
-      revelation: "Wahyu",
-    };
-
-    if (id && EW_BOOK_ID_MAP[id]) return EW_BOOK_ID_MAP[id];
-    if (name) {
-      const cleanName = name.trim().toLowerCase();
-      if (EW_BOOK_NAME_MAP[cleanName]) return EW_BOOK_NAME_MAP[cleanName];
-      const matched = Object.keys(EW_BOOK_NAME_MAP).find(
-        (k) => cleanName.includes(k) || k.includes(cleanName),
-      );
-      if (matched) return EW_BOOK_NAME_MAP[matched];
-    }
-    return name || `Kitab ${id}`;
-  };
-
   // Service Schedule State
   const [schedule, setSchedule] = useState<ScheduleItem[]>(() => {
-    const saved = localStorage.getItem("cp_last_schedule");
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem("cp_last_schedule");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
   const [editingItem, setEditingItem] = useState<ScheduleItem | null>(null);
   const [editorPreviewIdx, setEditorPreviewIdx] = useState(0);
@@ -1891,16 +1657,12 @@ export default function OperatorDashboard() {
   const [editorLogoSlot, setEditorLogoSlot] = useState<"left" | "right">(
     "left",
   );
-  const [editorMediaTab, setEditorMediaTab] = useState<"static" | "video">(
-    "static",
-  );
 
   // Dragging background image states & mouse handling
   const [isDraggingBg, setIsDraggingBg] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0, posX: 0, posY: 0, scale: 100 });
   const [dragType, setDragType] = useState<"pan" | "scale" | null>(null);
   const [activeHandle, setActiveHandle] = useState<string | null>(null);
-  const [showQuickBgs, setShowQuickBgs] = useState(false);
 
   // Dragging/resizing text box states & mouse handling
   const [isDraggingTextColumn, setIsDraggingTextColumn] = useState(false);
@@ -2329,10 +2091,6 @@ export default function OperatorDashboard() {
     setTextDragHandle(null);
   };
 
-  const handleBgWheel = (e: React.WheelEvent) => {
-    // Handled natively on previewCanvasRef to bypass passive event listener limits and avoid browser page zoom
-  };
-
   const previewCanvasRef = useRef<HTMLDivElement>(null);
 
   // Globally prevent default browser zoom-in and zoom-out on Ctrl+Wheel, hotkeys, & trackpad pinching
@@ -2436,86 +2194,6 @@ export default function OperatorDashboard() {
   >("text_raw");
   const [rawTextPaste, setRawTextPaste] = useState("");
   const [isAiParsingSongs, setIsAiParsingSongs] = useState(false);
-
-  const parseXmlBible = (
-    xmlText: string,
-    fileName: string,
-  ): CustomBible | null => {
-    try {
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-
-      // 1. Check if it's OpenSong XML format (usually has <bible><b n="...">)
-      let bElements = xmlDoc.getElementsByTagName("b");
-      if (bElements.length > 0) {
-        const books: any = {};
-        for (let i = 0; i < bElements.length; i++) {
-          const bTag = bElements[i];
-          const rawBookName = bTag.getAttribute("n") || `Kitab ${i + 1}`;
-          books[rawBookName] = {};
-
-          const cElements = bTag.getElementsByTagName("c");
-          for (let j = 0; j < cElements.length; j++) {
-            const cTag = cElements[j];
-            const chapNum = cTag.getAttribute("n") || String(j + 1);
-            books[rawBookName][chapNum] = [];
-
-            const vElements = cTag.getElementsByTagName("v");
-            for (let k = 0; k < vElements.length; k++) {
-              const vTag = vElements[k];
-              const verseText = vTag.textContent || "";
-              books[rawBookName][chapNum].push(verseText);
-            }
-          }
-        }
-
-        const fileBaseName = fileName.replace(/\.[^/.]+$/, "").toUpperCase();
-        return {
-          id: `xml-opensong-${fileBaseName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
-          name: `OpenSong Alkitab - ${fileBaseName}`,
-          books,
-        };
-      }
-
-      // 2. Check if it's Zefania XML format (usually has <XMLBIBLE> with <BIBLEBOOK bname="...">)
-      let bibleBookElements = xmlDoc.getElementsByTagName("BIBLEBOOK");
-      if (bibleBookElements.length > 0) {
-        const books: any = {};
-        for (let i = 0; i < bibleBookElements.length; i++) {
-          const bTag = bibleBookElements[i];
-          const rawBookName =
-            bTag.getAttribute("bname") ||
-            bTag.getAttribute("bnumber") ||
-            `Kitab ${i + 1}`;
-          books[rawBookName] = {};
-
-          const cElements = bTag.getElementsByTagName("CHAPTER");
-          for (let j = 0; j < cElements.length; j++) {
-            const cTag = cElements[j];
-            const chapNum = cTag.getAttribute("cnumber") || String(j + 1);
-            books[rawBookName][chapNum] = [];
-
-            const vElements = cTag.getElementsByTagName("VERS");
-            for (let k = 0; k < vElements.length; k++) {
-              const vTag = vElements[k];
-              const verseText = vTag.textContent || "";
-              books[rawBookName][chapNum].push(verseText);
-            }
-          }
-        }
-
-        const fileBaseName = fileName.replace(/\.[^/.]+$/, "").toUpperCase();
-        return {
-          id: `xml-zefania-${fileBaseName.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
-          name: `Zefania Alkitab - ${fileBaseName}`,
-          books,
-        };
-      }
-    } catch (err) {
-      console.error("Gagal mem-parsing XML format:", err);
-    }
-    return null;
-  };
 
   const parseTextScripture = (
     rawText: string,
@@ -2838,7 +2516,7 @@ export default function OperatorDashboard() {
       let idx = BIBLE_BOOKS.findIndex(b => b.toLowerCase() === item.trim().toLowerCase());
       if (idx === -1) {
         const batakEntries = Object.entries(BIBLE_BOOKS_BATAK);
-        const matchBatak = batakEntries.find(([tb, batak]) => batak.toLowerCase() === item.trim().toLowerCase());
+        const matchBatak = batakEntries.find(([, batak]) => batak.toLowerCase() === item.trim().toLowerCase());
         if (matchBatak) {
           idx = BIBLE_BOOKS.findIndex(b => b.toLowerCase() === matchBatak[0].toLowerCase());
         }
@@ -2892,21 +2570,36 @@ export default function OperatorDashboard() {
       customBibles.length > 0 &&
       !customBibles.some((cb) => cb.id === bibleVersion)
     ) {
-      setBibleVersion(customBibles[0].id);
+      setBibleVersion("tb");
+    } else if (!bibleVersion) {
+      setBibleVersion("tb");
     }
   }, [customBibles, bibleVersion]);
 
   useEffect(() => {
     const books = getAvailableBooks();
     if (books.length > 0 && !books.includes(selectedBibleBook)) {
-      setSelectedBibleBook(books[0]);
+      const canonical = resolveCanonicalIndoBook(selectedBibleBook);
+      const isBatak =
+        bibleVersion === "toba" || bibleVersion.toLowerCase().includes("batak");
+      const mapped = isBatak
+        ? BIBLE_BOOKS_BATAK[canonical] || canonical
+        : canonical;
+      setSelectedBibleBook(books.includes(mapped) ? mapped : books[0]);
     }
   }, [bibleVersion, customBibles]);
 
   useEffect(() => {
     const books = getEditorAvailableBooks();
     if (books.length > 0 && !books.includes(editorScripBook)) {
-      setEditorScripBook(books[0]);
+      const canonical = resolveCanonicalIndoBook(editorScripBook);
+      const isBatak =
+        editorScripVersion === "toba" ||
+        editorScripVersion.toLowerCase().includes("batak");
+      const mapped = isBatak
+        ? BIBLE_BOOKS_BATAK[canonical] || canonical
+        : canonical;
+      setEditorScripBook(books.includes(mapped) ? mapped : books[0]);
     }
   }, [editorScripVersion, customBibles]);
 
@@ -3131,9 +2824,37 @@ export default function OperatorDashboard() {
         setSelectedBibleChapter(chapter);
         fetchBibleChapter(selectedBibleBook, chapter);
       }
-    }, 800); // Increased debounce to 800ms to respect API quota and prevent accidental multiple calls while typing
+    }, 250);
     return () => clearTimeout(timer);
   }, [selectedBibleBook, chapterInput, activeTab, bibleVersion]);
+
+  // Load Buku Ende / Buku Nyanyian HKBP catalog when user switches to those tabs
+  const loadHkbpCatalog = useCallback(async (bookType: "be" | "bn") => {
+    setHkbpCatalogError(null);
+    setIsLoadingHkbpCatalog(true);
+    try {
+      const list = await fetchHkbpSongCatalog(bookType);
+      if (bookType === "be") {
+        setHkbpBeCatalog(list);
+      } else {
+        setHkbpBnCatalog(list);
+      }
+    } catch (err: any) {
+      console.error("Failed loading HKBP song catalog:", err);
+      setHkbpCatalogError(err?.message || "Gagal memuat katalog lagu HKBP.");
+    } finally {
+      setIsLoadingHkbpCatalog(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "library") return;
+    if (songSourceTab === "be" && hkbpBeCatalog.length === 0) {
+      loadHkbpCatalog("be");
+    } else if (songSourceTab === "bn" && hkbpBnCatalog.length === 0) {
+      loadHkbpCatalog("bn");
+    }
+  }, [activeTab, songSourceTab, hkbpBeCatalog.length, hkbpBnCatalog.length, loadHkbpCatalog]);
 
   useEffect(() => {
     const s = parseInt(startVerseInput);
@@ -3182,22 +2903,31 @@ export default function OperatorDashboard() {
     const versionLabel = cbMatch
       ? cbMatch.name
       : bibleVersion === "toba"
-        ? "Batak Toba"
+        ? "Batak Toba (HKBP)"
         : bibleVersion === "gntd"
           ? "Good News (GNTD)"
-          : "Alkitab TB";
-    const isBatak = bibleVersion === "toba" || bibleVersion.toLowerCase().includes("batak");
-    const bookTitle = isBatak ? BIBLE_BOOKS_BATAK[selectedBibleBook] || selectedBibleBook : selectedBibleBook;
+          : "Alkitab TB (HKBP)";
+    const isBatak =
+      bibleVersion === "toba" || bibleVersion.toLowerCase().includes("batak");
+    const canonical = resolveCanonicalIndoBook(selectedBibleBook);
+    const bookTitle = isBatak
+      ? BIBLE_BOOKS_BATAK[canonical] || selectedBibleBook
+      : canonical;
 
-    // Slice verses based on selection
     const startIdx = Math.max(0, startVerse - 1);
     const endIdx = Math.min(selectedSong.verses.length, endVerse);
     const filteredVerses = selectedSong.verses.slice(startIdx, endIdx);
+    const existingLabels = selectedSong.verseLabels || [];
 
-    // Create base labels for verses
-    const labels = [];
-    for (let i = startVerse; i <= endVerse; i++) {
-      labels.push(`Ayat ${i}`);
+    const labels: string[] = [];
+    const slicedPericopes: Record<number, string[]> = {};
+    for (let i = startIdx; i < endIdx; i++) {
+      const lbl = existingLabels[i] || `Ayat ${i + 1}`;
+      labels.push(lbl);
+      const vNum = parseInt(lbl.replace(/[^0-9]/g, ""), 10) || i + 1;
+      if (selectedSong.pericopes?.[vNum]) {
+        slicedPericopes[vNum] = selectedSong.pericopes[vNum];
+      }
     }
 
     const rangeText =
@@ -3211,6 +2941,7 @@ export default function OperatorDashboard() {
       type: "bible",
       verses: filteredVerses,
       verseLabels: labels,
+      pericopes: Object.keys(slicedPericopes).length > 0 ? slicedPericopes : undefined,
     };
 
     setSchedule([...schedule, newItem]);
@@ -3226,6 +2957,7 @@ export default function OperatorDashboard() {
       type: item.id.startsWith("bible-") ? "bible" : "song",
       verses: [...item.verses],
       verseLabels: item.verseLabels ? [...item.verseLabels] : undefined,
+      pericopes: (item as any).pericopes ? { ...(item as any).pericopes } : undefined,
       fontFamily: (item as any).fontFamily,
       textColor: (item as any).textColor,
       fontSizeMode: (item as any).fontSizeMode,
@@ -3258,48 +2990,6 @@ export default function OperatorDashboard() {
     setSchedule(updated);
     localStorage.setItem("cp_last_schedule", JSON.stringify(updated));
     localStorage.setItem("cp_service_schedule", JSON.stringify(updated));
-  };
-
-  const createNewLibrarySong = () => {
-    setSearch("");
-    const newSong: Song = {
-      id: `lib-song-${Date.now()}`,
-      title: "Lagu Baru",
-      artist: "Artis",
-      verses: ["Bait 1\nTuliskan lirik lagu Anda di sini."],
-      verseLabels: ["Verse 1"],
-      updatedAt: Date.now(),
-    } as any;
-    const updated = [newSong, ...librarySongs];
-    setLibrarySongs(updated);
-    syncSongsToBackend(updated);
-
-    // Immediately open editor for it!
-    setEditingItem({
-      id: newSong.id,
-      title: newSong.title,
-      artist: newSong.artist,
-      type: "song",
-      verses: [...newSong.verses],
-      verseLabels: ["Verse 1"],
-    } as any);
-  };
-
-  const handleClearAllSongs = async () => {
-    const confirmClear = window.confirm(
-      "Apakah Anda yakin ingin menghapus SEMUA lagu dari menu lirik?",
-    );
-    if (confirmClear) {
-      setLibrarySongs([]);
-      savePersistentSongs(currentAccountId, []);
-      setSelectedSong(null);
-      showToast("Semua lagu berhasil dihapus!", "success");
-      try {
-        await syncSongsToBackend([]);
-      } catch (err) {
-        console.error("Gagal sinkronisasi penghapusan ke server:", err);
-      }
-    }
   };
 
   const deleteSongFromLibrary = (song: Song, e: React.MouseEvent) => {
@@ -3361,14 +3051,17 @@ export default function OperatorDashboard() {
   const fetchBibleChapter = async (book: string, chapter: number) => {
     setIsFetchingBible(true);
     setBibleError(null);
-    const version = bibleVersion;
+    const version = bibleVersion || "tb";
 
-    const customMatch = customBibles.find((cb) => cb.id === version);
+    const customMatch =
+      version !== "tb" && version !== "toba" && version !== "gntd"
+        ? customBibles.find((cb) => cb.id === version)
+        : undefined;
+
     if (customMatch) {
       try {
         let verses: string[] = [];
 
-        // Try local books if they exist (e.g. presets)
         if (customMatch.books) {
           let bookChapterObj = null;
           let matchedKey = Object.keys(customMatch.books).find(
@@ -3382,8 +3075,13 @@ export default function OperatorDashboard() {
             );
             if (targetIdx === -1) {
               const batakEntries = Object.entries(BIBLE_BOOKS_BATAK);
-              const matchBatak = batakEntries.find(([tb, batak]) => batak.toLowerCase() === book.toLowerCase());
-              if (matchBatak) targetIdx = BIBLE_BOOKS.findIndex(b => b.toLowerCase() === matchBatak[0].toLowerCase());
+              const matchBatak = batakEntries.find(
+                ([, batak]) => batak.toLowerCase() === book.toLowerCase(),
+              );
+              if (matchBatak)
+                targetIdx = BIBLE_BOOKS.findIndex(
+                  (b) => b.toLowerCase() === matchBatak[0].toLowerCase(),
+                );
             }
             if (targetIdx !== -1) {
               const numericKey = String(targetIdx + 1);
@@ -3413,7 +3111,6 @@ export default function OperatorDashboard() {
           }
         }
 
-        // On-demand fetch from database API
         if (verses.length === 0) {
           const res = await fetch(
             `/api/custom-bibles/${encodeURIComponent(version)}/chapter?book=${encodeURIComponent(book)}&chapter=${chapter}`,
@@ -3443,7 +3140,7 @@ export default function OperatorDashboard() {
         };
         setSelectedSong(formatted);
 
-        const context = `${book}-${chapter}`;
+        const context = `${version}-${book}-${chapter}`;
         if (currentBibleContext.current !== context && verses.length > 0) {
           setEndVerseInput(verses.length.toString());
           setStartVerseInput("1");
@@ -3455,25 +3152,51 @@ export default function OperatorDashboard() {
       } finally {
         setIsFetchingBible(false);
       }
-    } else {
-      // Standard/Native Bible Fetch fallback (tb / toba / gntd)
+    } else if (version === "tb" || version === "toba") {
+      // Direct HKBP Alkitab link (https://hkbp.or.id/alkitab) separating Judul Perikop vs Ayat
       try {
-        const isBatak = version === "toba";
-        const isGntd = version === "gntd";
+        const result = await fetchHkbpBibleChapter(book, chapter, version);
         const displayLabel =
           version === "toba"
-            ? "Batak Toba"
-            : version === "gntd"
-              ? "Good News (GNTD)"
-              : "Alkitab TB";
+            ? "Bibel Batak Toba (HKBP)"
+            : "Alkitab Terjemahan Baru (HKBP)";
 
+        const formatted: Song = {
+          id: `bible-${version}-${result.bookIndo}-${chapter}`,
+          title: `${result.bookDisplay} ${chapter}`,
+          artist: displayLabel,
+          verses: result.verses,
+          verseLabels: result.verseNumbers.map((n) => `Ayat ${n}`),
+          pericopes: result.pericopes,
+        };
+        setSelectedSong(formatted);
+
+        const context = `${version}-${result.bookIndo}-${chapter}`;
+        if (currentBibleContext.current !== context && result.verses.length > 0) {
+          const maxV =
+            result.verseNumbers[result.verseNumbers.length - 1] ||
+            result.verses.length;
+          setEndVerseInput(String(maxV));
+          setStartVerseInput("1");
+          currentBibleContext.current = context;
+        }
+      } catch (err: any) {
+        console.error(err);
+        setBibleError(err.message || "Gagal memuat Alkitab dari HKBP.");
+      } finally {
+        setIsFetchingBible(false);
+      }
+    } else {
+      // GNTD / Server Scripture fallback
+      try {
+        const displayLabel = "Good News (GNTD)";
         const res = await fetch("/api/ai/scripture", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             book: book,
             chapter: chapter,
-            version: version || "tb",
+            version: version || "gntd",
           }),
         });
 
@@ -3491,7 +3214,7 @@ export default function OperatorDashboard() {
 
         const verses = data.map((item: any) => item.content);
         const formatted: Song = {
-          id: `bible-${version || "tb"}-${book}-${chapter}`,
+          id: `bible-${version}-${book}-${chapter}`,
           title: `${book} ${chapter}`,
           artist: displayLabel,
           verses: verses,
@@ -3503,7 +3226,7 @@ export default function OperatorDashboard() {
         };
         setSelectedSong(formatted);
 
-        const context = `${book}-${chapter}`;
+        const context = `${version}-${book}-${chapter}`;
         if (currentBibleContext.current !== context && verses.length > 0) {
           setEndVerseInput(verses.length.toString());
           setStartVerseInput("1");
@@ -3526,11 +3249,14 @@ export default function OperatorDashboard() {
     setEditorIsFetchingScrip(true);
     setEditorScripError(null);
     try {
-      const customMatch = customBibles.find((cb) => cb.id === version);
+      const customMatch =
+        version !== "tb" && version !== "toba" && version !== "gntd"
+          ? customBibles.find((cb) => cb.id === version)
+          : undefined;
+
       if (customMatch) {
         let verses: string[] = [];
 
-        // Try local books if they exist (e.g. presets)
         if (customMatch.books) {
           let bookChapterObj = null;
           let matchedKey = Object.keys(customMatch.books).find(
@@ -3544,8 +3270,13 @@ export default function OperatorDashboard() {
             );
             if (targetIdx === -1) {
               const batakEntries = Object.entries(BIBLE_BOOKS_BATAK);
-              const matchBatak = batakEntries.find(([tb, batak]) => batak.toLowerCase() === book.toLowerCase());
-              if (matchBatak) targetIdx = BIBLE_BOOKS.findIndex(b => b.toLowerCase() === matchBatak[0].toLowerCase());
+              const matchBatak = batakEntries.find(
+                ([, batak]) => batak.toLowerCase() === book.toLowerCase(),
+              );
+              if (matchBatak)
+                targetIdx = BIBLE_BOOKS.findIndex(
+                  (b) => b.toLowerCase() === matchBatak[0].toLowerCase(),
+                );
             }
             if (targetIdx !== -1) {
               const numericKey = String(targetIdx + 1);
@@ -3575,7 +3306,6 @@ export default function OperatorDashboard() {
           }
         }
 
-        // On-demand fetch from database API
         if (verses.length === 0) {
           const res = await fetch(
             `/api/custom-bibles/${encodeURIComponent(version)}/chapter?book=${encodeURIComponent(book)}&chapter=${chapter}`,
@@ -3597,8 +3327,15 @@ export default function OperatorDashboard() {
             `Pasal ${chapter} tidak ditemukan di database '${customMatch.name}'`,
           );
         }
+      } else if (version === "tb" || version === "toba") {
+        const result = await fetchHkbpBibleChapter(book, chapter, version);
+        setEditorScripPreviewList(
+          result.verses.map((c, i) => ({
+            vNum: result.verseNumbers[i] || i + 1,
+            content: c,
+          })),
+        );
       } else {
-        // Standard/Native Bible Fetch fallback (tb / toba / gntd)
         const res = await fetch("/api/ai/scripture", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3775,6 +3512,76 @@ export default function OperatorDashboard() {
 
     return [...baseList, ...aiResults];
   }, [search, librarySongs, aiResults, songSortMode]);
+
+  const filteredHkbpSongs = useMemo(() => {
+    const sourceList = songSourceTab === "be" ? hkbpBeCatalog : hkbpBnCatalog;
+    const raw = search.trim().toLowerCase();
+    if (!raw) return sourceList;
+
+    const cleanQuery = raw
+      .replace(/^(?:be|bn|ende|buku\s+ende|buku\s+nyanyian)\s+/i, "")
+      .replace(/^no\.?\s*/i, "")
+      .trim();
+    const numericOnly = cleanQuery.replace(/[^0-9]/g, "");
+
+    const matched = sourceList.filter((item) => {
+      const noLower = item.nomorLagu.toLowerCase();
+      const titleLower = item.judul.toLowerCase();
+      const fullTag = `${item.songbook} ${noLower}`;
+      return (
+        noLower.includes(cleanQuery) ||
+        titleLower.includes(cleanQuery) ||
+        fullTag.includes(raw) ||
+        (item.nomorBukuLagu && item.nomorBukuLagu.includes(cleanQuery))
+      );
+    });
+
+    if (cleanQuery && /^\d+[a-z]?$/i.test(cleanQuery)) {
+      matched.sort((a, b) => {
+        const aExact = a.nomorLagu.toLowerCase() === cleanQuery ? 0 : a.nomorLagu.startsWith(numericOnly) ? 1 : 2;
+        const bExact = b.nomorLagu.toLowerCase() === cleanQuery ? 0 : b.nomorLagu.startsWith(numericOnly) ? 1 : 2;
+        if (aExact !== bExact) return aExact - bExact;
+        return a.numberNum - b.numberNum;
+      });
+    }
+
+    return matched;
+  }, [search, songSourceTab, hkbpBeCatalog, hkbpBnCatalog]);
+
+  const handleSelectHkbpSong = async (
+    item: HkbpSongCatalogItem,
+    action: "preview" | "schedule" | "edit" | "save_local" = "preview",
+  ) => {
+    const key = `${item.songbook}:${item.nomorLagu}`;
+    setLoadingHkbpSongKey(key);
+    try {
+      const fullSong = await fetchHkbpSongDetail(
+        item.songbook,
+        item.nomorLagu,
+        item.judul,
+      );
+      if (action === "schedule") {
+        addToSchedule(fullSong);
+        showToast(`${fullSong.title} ditambahkan ke Jadwal`, "success");
+      } else if (action === "edit") {
+        setSelectedSong(fullSong);
+        setEditingItem({ ...fullSong, type: "song" } as any);
+      } else if (action === "save_local") {
+        const filtered = librarySongs.filter((s) => s.id !== fullSong.id);
+        const updated = [{ ...fullSong, updatedAt: Date.now() } as Song, ...filtered];
+        setLibrarySongs(updated);
+        savePersistentSongs(currentAccountId, updated);
+        syncSongsToBackend(updated);
+        showToast(`${fullSong.title} disimpan ke Lagu Saya`, "success");
+      } else {
+        setSelectedSong(fullSong);
+      }
+    } catch (err: any) {
+      showToast(err?.message || "Gagal memuat lirik lagu HKBP.", "warn");
+    } finally {
+      setLoadingHkbpSongKey(null);
+    }
+  };
 
   const filteredPresentations = useMemo(() => {
     const cleanQuery = search.trim().toLowerCase();
@@ -4681,6 +4488,7 @@ export default function OperatorDashboard() {
                     <button
                       onClick={() => {
                         setActiveMenu(null);
+                        publishOperatorStatus(false, false);
                         showToast(
                           `Sesi operator ${username} berhasil keluar`,
                           "info",
@@ -4701,7 +4509,10 @@ export default function OperatorDashboard() {
         <div className="flex items-center space-x-4">
           {/* Active User Avatar Badge (Quick access to Account profile) */}
           <button
-            onClick={() => navigate("/")}
+            onClick={() => {
+              publishOperatorStatus(false, false);
+              navigate("/");
+            }}
             title="Klik untuk berpindah atau mengelola Akun Gereja"
             className="flex items-center gap-2 px-2.5 py-1 bg-blue-950/40 hover:bg-blue-900/60 border border-blue-500/30 hover:border-blue-500/60 rounded-lg group transition-all text-left"
           >
@@ -4960,77 +4771,217 @@ export default function OperatorDashboard() {
                 </div>
               </div>
 
+              {/* Song Database Source Switcher (Lagu Saya / Buku Ende / Buku Nyanyian HKBP) */}
+              <div className="px-3 pb-2 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSongSourceTab("local")}
+                  className={`flex-1 py-1.5 px-2 rounded-md text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                    songSourceTab === "local"
+                      ? "bg-blue-600 text-white border-blue-500 shadow"
+                      : "bg-[#161618] text-gray-400 border-[#2A2A2E] hover:text-white"
+                  }`}
+                >
+                  Lagu Saya
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSongSourceTab("be")}
+                  className={`flex-1 py-1.5 px-2 rounded-md text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                    songSourceTab === "be"
+                      ? "bg-blue-600 text-white border-blue-500 shadow"
+                      : "bg-[#161618] text-gray-400 border-[#2A2A2E] hover:text-white"
+                  }`}
+                  title={HKBP_SOURCE_URLS.bukuEnde}
+                >
+                  Buku Ende
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSongSourceTab("bn")}
+                  className={`flex-1 py-1.5 px-2 rounded-md text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                    songSourceTab === "bn"
+                      ? "bg-blue-600 text-white border-blue-500 shadow"
+                      : "bg-[#161618] text-gray-400 border-[#2A2A2E] hover:text-white"
+                  }`}
+                  title={HKBP_SOURCE_URLS.bukuNyanyian}
+                >
+                  BN HKBP
+                </button>
+              </div>
+
               {/* EW7 Library Management Header Button */}
-              <div className="px-3 pb-2 border-b border-[#2A2A2E]/50 flex items-center justify-between gap-1 select-none">
-                <div className="flex items-center gap-1.5 truncate">
-                  <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest truncate">
-                    Lagu
-                  </span>
-                  {filteredSongs.length > 0 && (
+              {songSourceTab === "local" ? (
+                <div className="px-3 pb-2 border-b border-[#2A2A2E]/50 flex items-center justify-between gap-1 select-none">
+                  <div className="flex items-center gap-1.5 truncate">
+                    <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest truncate">
+                      Lagu
+                    </span>
+                    {filteredSongs.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={selectAllLibrary}
+                        className="text-blue-400 hover:text-blue-300 text-[8px] font-black uppercase tracking-wider hover:underline"
+                        title="Pilih semua lagu pencarian (Ctrl+A)"
+                      >
+                        Pilih Semua
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 bg-[#161618] border border-[#2A2A2E] p-0.5 rounded text-[8px] select-none text-zinc-500 font-black uppercase tracking-wider shrink-0">
+                    <span className="text-[7px] text-zinc-650 px-1 font-bold">
+                      sort:
+                    </span>
                     <button
                       type="button"
-                      onClick={selectAllLibrary}
-                      className="text-blue-400 hover:text-blue-300 text-[8px] font-black uppercase tracking-wider hover:underline"
-                      title="Pilih semua lagu pencarian (Ctrl+A)"
+                      onClick={() => {
+                        setSongSortMode("default");
+                        localStorage.setItem("cp_song_sort_mode", "default");
+                      }}
+                      className={`px-1 rounded transition-all select-none ${songSortMode === "default" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
+                      title="Urutan Bawaan"
                     >
-                      Pilih Semua
+                      Bawaan
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSongSortMode("alphabetical");
+                        localStorage.setItem("cp_song_sort_mode", "alphabetical");
+                      }}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "alphabetical" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
+                      title="Urutkan Berdasarkan Abjad (A-Z)"
+                    >
+                      <CaseSensitive className="w-2.5 h-2.5" /> Abjad
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSongSortMode("number");
+                        localStorage.setItem("cp_song_sort_mode", "number");
+                      }}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "number" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
+                      title="Urutkan Berdasarkan Angka/Nomor Buku Lagu"
+                    >
+                      <Hash className="w-2.5 h-2.5" /> Nomor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSongSortMode("edited");
+                        localStorage.setItem("cp_song_sort_mode", "edited");
+                      }}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "edited" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
+                      title="Urutkan Berdasarkan Waktu Terakhir Diedit"
+                    >
+                      <Clock className="w-2.5 h-2.5" /> Edit
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 bg-[#161618] border border-[#2A2A2E] p-0.5 rounded text-[8px] select-none text-zinc-500 font-black uppercase tracking-wider shrink-0">
-                  <span className="text-[7px] text-zinc-650 px-1 font-bold">
-                    sort:
+              ) : (
+                <div className="px-3 pb-2 border-b border-[#2A2A2E]/50 flex items-center justify-between gap-2 select-none">
+                  <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider truncate">
+                    {songSourceTab === "be"
+                      ? `Buku Ende (${filteredHkbpSongs.length})`
+                      : `Buku Nyanyian HKBP (${filteredHkbpSongs.length})`}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSongSortMode("default");
-                      localStorage.setItem("cp_song_sort_mode", "default");
-                    }}
-                    className={`px-1 rounded transition-all select-none ${songSortMode === "default" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
-                    title="Urutan Bawaan"
-                  >
-                    Bawaan
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSongSortMode("alphabetical");
-                      localStorage.setItem("cp_song_sort_mode", "alphabetical");
-                    }}
-                    className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "alphabetical" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
-                    title="Urutkan Berdasarkan Abjad (A-Z)"
-                  >
-                    <CaseSensitive className="w-2.5 h-2.5" /> Abjad
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSongSortMode("number");
-                      localStorage.setItem("cp_song_sort_mode", "number");
-                    }}
-                    className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "number" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
-                    title="Urutkan Berdasarkan Angka/Nomor Buku Lagu"
-                  >
-                    <Hash className="w-2.5 h-2.5" /> Nomor
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSongSortMode("edited");
-                      localStorage.setItem("cp_song_sort_mode", "edited");
-                    }}
-                    className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "edited" ? "bg-[#2A2A2E] text-blue-400 font-extrabold" : "hover:text-zinc-300"}`}
-                    title="Urutkan Berdasarkan Waktu Terakhir Diedit"
-                  >
-                    <Clock className="w-2.5 h-2.5" /> Edit
-                  </button>
+                  <span className="text-[8px] font-bold text-gray-500 uppercase tracking-tight">
+                    hkbp.or.id
+                  </span>
                 </div>
-              </div>
+              )}
 
               <div className="flex-1 flex flex-col h-full overflow-hidden">
                 <div className="flex-1 overflow-y-auto px-2 space-y-1 custom-scrollbar py-2">
-                  {filteredSongs.length === 0 ? (
+                  {songSourceTab !== "local" ? (
+                    isLoadingHkbpCatalog ? (
+                      <div className="py-10 flex flex-col items-center justify-center text-gray-500 gap-2">
+                        <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                        <span className="text-[9px] font-black uppercase tracking-widest">
+                          Memuat {songSourceTab === "be" ? "Buku Ende" : "Buku Nyanyian"} HKBP...
+                        </span>
+                      </div>
+                    ) : hkbpCatalogError ? (
+                      <div className="p-4 bg-red-950/20 border border-red-500/30 rounded text-center my-4">
+                        <p className="text-red-400 text-[10px] font-bold mb-2">
+                          {hkbpCatalogError}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => loadHkbpCatalog(songSourceTab)}
+                          className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded uppercase"
+                        >
+                          Muat Ulang
+                        </button>
+                      </div>
+                    ) : filteredHkbpSongs.length === 0 ? (
+                      <div className="py-8 text-center text-gray-600 text-[10px] uppercase font-bold">
+                        Lagu tidak ditemukan
+                      </div>
+                    ) : (
+                      filteredHkbpSongs.slice(0, 1000).map((item) => {
+                        const songId = `hkbp-${item.songbook}-${item.nomorLagu}`;
+                        const itemKey = `${item.songbook}:${item.nomorLagu}`;
+                        const isItemLoading = loadingHkbpSongKey === itemKey;
+                        const isSelected = selectedSong?.id === songId;
+                        return (
+                          <div
+                            key={itemKey}
+                            onClick={() => handleSelectHkbpSong(item, "preview")}
+                            className={`w-full group flex items-center px-2 py-2 rounded text-[11px] cursor-pointer transition-all border border-transparent ${
+                              isSelected
+                                ? "bg-blue-600/20 text-blue-400 border-blue-500/30"
+                                : "hover:bg-[#1C1C1F] text-gray-400"
+                            }`}
+                          >
+                            <span className="mr-2 text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20 shrink-0 min-w-[38px] text-center">
+                              {item.songbook.toUpperCase()} {item.nomorLagu}
+                            </span>
+                            <div className="flex-1 truncate">
+                              <div className="truncate font-bold tracking-tight">
+                                {item.judul}
+                              </div>
+                              <div className="text-[8px] font-medium opacity-45 uppercase tracking-wider truncate">
+                                {item.songbook === "be" ? "Buku Ende HKBP" : "Buku Nyanyian HKBP"}
+                                {item.tonalitas ? ` • ${item.tonalitas}` : ""}
+                                {item.nomorBukuLagu ? ` • BE ${item.nomorBukuLagu}` : ""}
+                              </div>
+                            </div>
+                            <div className="flex items-center ml-1 space-x-1 shrink-0">
+                              {isItemLoading ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                              ) : (
+                                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity space-x-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSelectHkbpSong(item, "schedule");
+                                    }}
+                                    className="p-1 hover:text-white bg-blue-500/10 rounded"
+                                    title="Tambahkan ke Jadwal Ibadah"
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSelectHkbpSong(item, "edit");
+                                    }}
+                                    className="p-1 hover:text-white bg-white/5 rounded"
+                                    title="Edit Lagu"
+                                  >
+                                    <Edit2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )
+                  ) : filteredSongs.length === 0 ? (
                     <div className="py-8 text-center text-gray-600 text-[10px] uppercase font-bold">
                       No items found
                     </div>
@@ -5299,180 +5250,124 @@ export default function OperatorDashboard() {
             </div>
           ) : activeTab === "bible" ? (
             <div className="flex flex-col h-full overflow-hidden bg-[#0A0A0B]/30">
-              {customBibles.length === 0 ? (
-                <div className="flex flex-col items-center justify-center p-6 h-full text-center text-zinc-400 space-y-4">
-                  <div className="p-3 bg-red-500/10 rounded-full text-red-500">
-                    <Book className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-black uppercase tracking-wider text-zinc-200">
-                      Database Alkitab Kosong
-                    </h4>
-                    <p className="text-[10px] leading-relaxed text-zinc-500 mt-2">
-                      Semua isi Alkitab bawaan telah dihapus sesuai permintaan.
-                      <br />
-                      Silakan unggah database Alkitab kustom (JSON / Teks)
-                      Anda melalui menu di atas untuk mulai mencari ayat.
-                    </p>
+              <div className="p-3 border-b border-[#2A2A2E]/50">
+                <div className="flex justify-between items-center mb-3">
+                  <div className="flex bg-[#121213] p-0.5 rounded-lg border border-[#2A2A2E]/50 flex-wrap gap-1 max-w-[210px]">
+                    {/* Bahasa Indonesia (HKBP Online) */}
+                    <button
+                      type="button"
+                      onClick={() => setBibleVersion("tb")}
+                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "tb" ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
+                      title={`Alkitab Bahasa Indonesia TB (${HKBP_SOURCE_URLS.alkitab})`}
+                    >
+                      Indonesia
+                    </button>
+
+                    {/* Bahasa Batak Toba (HKBP Online) */}
+                    <button
+                      type="button"
+                      onClick={() => setBibleVersion("toba")}
+                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "toba" ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
+                      title={`Bibel Bahasa Batak Toba (${HKBP_SOURCE_URLS.alkitab})`}
+                    >
+                      Batak Toba
+                    </button>
+
+                    {/* Other Custom Bibles if installed */}
+                    {customBibles
+                      .filter(
+                        (cb) =>
+                          cb.id !== "tb" &&
+                          cb.id !== "toba",
+                      )
+                      .map((cb) => (
+                        <button
+                          key={cb.id}
+                          type="button"
+                          onClick={() => setBibleVersion(cb.id)}
+                          className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${bibleVersion === cb.id ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
+                          title={cb.name}
+                        >
+                          {cb.name
+                            .replace("EasyWorship Alkitab - ", "")
+                            .slice(0, 10)
+                            .toUpperCase()}
+                        </button>
+                      ))}
                   </div>
                   <button
-                    onClick={() => setShowBibleDbModal(true)}
-                    className="mt-1 px-4 py-2 bg-red-600 hover:bg-red-500 hover:scale-[1.02] active:scale-[0.98] text-white font-black text-[9.5px] uppercase tracking-wider rounded-lg transition-all shadow-lg shadow-red-600/10 cursor-pointer"
+                    onClick={addBibleToSchedule}
+                    disabled={!selectedSong?.id.startsWith("bible-")}
+                    className={`flex items-center gap-1 text-[9px] bg-red-600 hover:bg-red-500 text-white px-2 py-1 rounded font-black disabled:opacity-30 transition-all`}
                   >
-                    Unggah Alkitab Kustom
+                    <Plus className="w-2.5 h-2.5" /> ADD TO PLAN
                   </button>
                 </div>
-              ) : (
-                <>
-                  <div className="p-3 border-b border-[#2A2A2E]/50">
-                    <div className="flex justify-between items-center mb-3">
-                      <div className="flex bg-[#121213] p-0.5 rounded-lg border border-[#2A2A2E]/50 flex-wrap gap-1 max-w-[210px]">
-                        {/* Bahasa Indonesia */}
-                        {(() => {
-                          const indoBible = customBibles.find(
-                            (cb) =>
-                              cb.id === "json-indo-tb" ||
-                              cb.id.toLowerCase().includes("indo") ||
-                              cb.id.toLowerCase().includes("tb"),
-                          );
-                          const isIndoSelected = indoBible ? bibleVersion === indoBible.id : bibleVersion === "tb";
-                          const targetVersionId = indoBible ? indoBible.id : "tb";
-                          const titleText = indoBible ? indoBible.name : "Alkitab Bahasa Indonesia Terjemahan Baru (Online)";
-                          
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => setBibleVersion(targetVersionId)}
-                              className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${isIndoSelected ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
-                              title={titleText}
-                            >
-                              Bahasa Indonesia {indoBible ? "" : "(Online)"}
-                            </button>
-                          );
-                        })()}
-
-                        {/* Bahasa Batak */}
-                        {(() => {
-                          const batakBible = customBibles.find(
-                            (cb) =>
-                              cb.id.toLowerCase().includes("toba") ||
-                              cb.id.toLowerCase().includes("batak"),
-                          );
-                          const isBatakSelected = batakBible ? bibleVersion === batakBible.id : bibleVersion === "toba";
-                          const targetVersionId = batakBible ? batakBible.id : "toba";
-                          const titleText = batakBible ? batakBible.name : "Alkitab Bahasa Batak Toba (Scraper Online)";
-                          
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => setBibleVersion(targetVersionId)}
-                              className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${isBatakSelected ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
-                              title={titleText}
-                            >
-                              Bahasa Batak {batakBible ? "" : "(Online)"}
-                            </button>
-                          );
-                        })()}
-
-                        {/* Other Custom Bibles if they exist */}
-                        {customBibles
-                          .filter(
-                            (cb) =>
-                              cb.id !== "json-indo-tb" &&
-                              !cb.id.toLowerCase().includes("indo") &&
-                              !cb.id.toLowerCase().includes("tb") &&
-                              !cb.id.toLowerCase().includes("toba") &&
-                              !cb.id.toLowerCase().includes("batak"),
-                          )
-                          .map((cb) => (
-                            <button
-                              key={cb.id}
-                              onClick={() => setBibleVersion(cb.id)}
-                              className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${bibleVersion === cb.id ? "bg-blue-600 text-white shadow-lg font-extrabold" : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"}`}
-                              title={cb.name}
-                            >
-                              {cb.name
-                                .replace("EasyWorship Alkitab - ", "")
-                                .slice(0, 10)
-                                .toUpperCase()}
-                            </button>
-                          ))}
-                      </div>
-                      <button
-                        onClick={addBibleToSchedule}
-                        disabled={!selectedSong?.id.startsWith("bible-")}
-                        className={`flex items-center gap-1 text-[9px] bg-red-600 hover:bg-red-500 text-white px-2 py-1 rounded font-black disabled:opacity-30 transition-all`}
-                      >
-                        <Plus className="w-2.5 h-2.5" /> ADD TO PLAN
-                      </button>
-                    </div>
-                    <select
-                      className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500/50 cursor-pointer"
-                      value={selectedBibleBook}
-                      onChange={(e) => setSelectedBibleBook(e.target.value)}
-                    >
-                      {getAvailableBooks().map((b) => (
-                        <option key={b} value={b}>
-                          {b}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="grid grid-cols-3 gap-1.5 mt-2">
-                      <div>
-                        <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
-                          Pasal
-                        </span>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
-                          value={chapterInput}
-                          onChange={(e) =>
-                            setChapterInput(
-                              e.target.value.replace(/[^0-9]/g, ""),
-                            )
-                          }
-                          placeholder="Pasal"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
-                          Dari Ayat
-                        </span>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
-                          value={startVerseInput}
-                          onChange={(e) =>
-                            setStartVerseInput(
-                              e.target.value.replace(/[^0-9]/g, ""),
-                            )
-                          }
-                          placeholder="Dari"
-                        />
-                      </div>
-                      <div>
-                        <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
-                          Sampai
-                        </span>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
-                          value={endVerseInput}
-                          onChange={(e) =>
-                            setEndVerseInput(
-                              e.target.value.replace(/[^0-9]/g, ""),
-                            )
-                          }
-                          placeholder="Sampai"
-                        />
-                      </div>
-                    </div>
+                <select
+                  className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500/50 cursor-pointer"
+                  value={selectedBibleBook}
+                  onChange={(e) => setSelectedBibleBook(e.target.value)}
+                >
+                  {getAvailableBooks().map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-3 gap-1.5 mt-2">
+                  <div>
+                    <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
+                      Pasal
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
+                      value={chapterInput}
+                      onChange={(e) =>
+                        setChapterInput(
+                          e.target.value.replace(/[^0-9]/g, ""),
+                        )
+                      }
+                      placeholder="Pasal"
+                    />
                   </div>
-                </>
-              )}
+                  <div>
+                    <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
+                      Dari Ayat
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
+                      value={startVerseInput}
+                      onChange={(e) =>
+                        setStartVerseInput(
+                          e.target.value.replace(/[^0-9]/g, ""),
+                        )
+                      }
+                      placeholder="Dari"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[7.5px] font-black text-gray-500 uppercase mb-0.5 block tracking-wider">
+                      Sampai
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="w-full bg-[#121213] border border-[#2A2A2E]/50 rounded px-2 py-1 text-[11px] text-white focus:border-blue-500/50 outline-none text-center font-bold"
+                      value={endVerseInput}
+                      onChange={(e) =>
+                        setEndVerseInput(
+                          e.target.value.replace(/[^0-9]/g, ""),
+                        )
+                      }
+                      placeholder="Sampai"
+                    />
+                  </div>
+                </div>
+              </div>
               <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
                 {isFetchingBible ? (
                   <div className="flex flex-col items-center justify-center h-40 opacity-40">
@@ -5500,41 +5395,65 @@ export default function OperatorDashboard() {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    <div className="text-[8px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
-                      Daftar Ayat
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[8px] font-black text-gray-500 uppercase tracking-widest">
+                        Daftar Ayat &amp; Perikop
+                      </span>
+                      <span className="text-[8px] font-bold text-blue-400/80 uppercase">
+                        {bibleVersion === "toba" ? "Batak Toba" : bibleVersion === "tb" ? "TB Indonesia" : ""}
+                      </span>
                     </div>
                     {selectedSong?.id.startsWith("bible-") &&
                       selectedSong.verses.map((verse, idx) => {
-                        const vNum = idx + 1;
+                        const vNum =
+                          parseInt(
+                            getBibleVerseLabel(
+                              selectedSong.verseLabels || [],
+                              idx,
+                            ),
+                            10,
+                          ) || idx + 1;
+                        const pericopesAtVerse = selectedSong.pericopes?.[vNum];
                         const isInRange =
                           vNum >= startVerse && vNum <= endVerse;
                         const isCurrentlyActive =
                           currentSlide?.parentId === selectedSong.id &&
                           currentSlide?.slideIdx === idx;
                         return (
-                          <button
-                            key={idx}
-                            onClick={() =>
-                              handleVerseClick(
-                                `${vNum}. ${verse}`,
-                                `${selectedBibleBook} ${selectedBibleChapter}:${vNum}`,
-                                selectedSong.id,
-                                idx,
-                              )
-                            }
-                            className={`w-full text-left p-2 rounded text-[11px] group transition-colors border leading-relaxed ${isCurrentlyActive ? "border-blue-600 bg-blue-600/20" : isInRange ? "bg-blue-600/10 border-blue-500/30" : "hover:bg-white/5 border-transparent"}`}
-                          >
-                            <span
-                              className={`text-[9px] font-black mr-2 ${isCurrentlyActive ? "text-white" : isInRange ? "text-blue-400" : "text-gray-600"}`}
+                          <div key={idx} className="space-y-1">
+                            {pericopesAtVerse && pericopesAtVerse.length > 0 && (
+                              <div className="mt-2.5 first:mt-0 px-2.5 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-left select-none">
+                                <span className="inline-block text-[7px] font-black uppercase tracking-widest text-amber-400 bg-amber-500/20 px-1.5 py-0.5 rounded mr-1.5 align-middle">
+                                  Judul Perikop
+                                </span>
+                                <span className="text-[10.5px] font-extrabold text-amber-200 leading-snug align-middle">
+                                  {pericopesAtVerse.join(" • ")}
+                                </span>
+                              </div>
+                            )}
+                            <button
+                              onClick={() =>
+                                handleVerseClick(
+                                  `${vNum}. ${verse}`,
+                                  `${selectedBibleBook} ${selectedBibleChapter}:${vNum}`,
+                                  selectedSong.id,
+                                  idx,
+                                )
+                              }
+                              className={`w-full text-left p-2 rounded text-[11px] group transition-colors border leading-relaxed ${isCurrentlyActive ? "border-blue-600 bg-blue-600/20" : isInRange ? "bg-blue-600/10 border-blue-500/30" : "hover:bg-white/5 border-transparent"}`}
                             >
-                              {vNum}
-                            </span>
-                            <span
-                              className={`${isCurrentlyActive || isInRange ? "text-white" : "text-gray-400 group-hover:text-gray-300"} transition-all`}
-                            >
-                              {verse}
-                            </span>
-                          </button>
+                              <span
+                                className={`text-[9px] font-black mr-2 ${isCurrentlyActive ? "text-white" : isInRange ? "text-blue-400" : "text-gray-600"}`}
+                              >
+                                {vNum}
+                              </span>
+                              <span
+                                className={`${isCurrentlyActive || isInRange ? "text-white" : "text-gray-400 group-hover:text-gray-300"} transition-all`}
+                              >
+                                {verse}
+                              </span>
+                            </button>
+                          </div>
                         );
                       })}
                   </div>
@@ -5581,6 +5500,8 @@ export default function OperatorDashboard() {
                         ? "bible"
                         : "song",
                       verses: [...selectedSong.verses],
+                      verseLabels: selectedSong.verseLabels ? [...selectedSong.verseLabels] : undefined,
+                      pericopes: selectedSong.pericopes ? { ...selectedSong.pericopes } : undefined,
                     };
                     setEditingItem(item as ScheduleItem);
                   } else {
@@ -5625,6 +5546,10 @@ export default function OperatorDashboard() {
                   selectedSong.id.startsWith("bible-") ||
                   (selectedSong as any).type === "bible";
                 const bibleVerseNum = getBibleVerseLabel(labels, idx);
+                const bibleVerseNumInt = parseInt(bibleVerseNum, 10) || idx + 1;
+                const slidePericopes = isBible
+                  ? selectedSong.pericopes?.[bibleVerseNumInt]
+                  : undefined;
                 const displayContent = isBible
                   ? `${bibleVerseNum}. ${verse}`
                   : verse;
@@ -5634,6 +5559,13 @@ export default function OperatorDashboard() {
                 const isActive =
                   previewSlide?.parentId === selectedSong.id &&
                   previewSlide?.slideIdx === idx;
+                const rawLabel =
+                  labels[idx] !== undefined
+                    ? labels[idx]
+                    : isBible
+                      ? `Ayat ${idx + 1}`
+                      : `Verse ${idx + 1}`;
+                const isReffSlide = /^(reff|chorus|refrain)/i.test(rawLabel);
 
                 return (
                   <button
@@ -5649,8 +5581,13 @@ export default function OperatorDashboard() {
                     onContextMenu={(e) =>
                       handleContextMenu(e, "slide_item", { verse, idx })
                     }
-                    className={`aspect-video rounded border-2 flex flex-col p-3 text-center cursor-pointer shadow-xl transition-all relative group bg-[#161618] overflow-hidden ${isActive ? "bg-[#1C1C1F] border-blue-600 ring-4 ring-blue-500/10" : "border-[#2A2A2E] hover:border-gray-500"}`}
+                    className={`aspect-video rounded border-2 flex flex-col p-3 text-center cursor-pointer shadow-xl transition-all relative group bg-[#161618] overflow-hidden ${isActive ? "bg-[#1C1C1F] border-blue-600 ring-4 ring-blue-500/10" : isReffSlide ? "border-amber-500/35 hover:border-amber-400" : "border-[#2A2A2E] hover:border-gray-500"}`}
                   >
+                    {slidePericopes && slidePericopes.length > 0 && (
+                      <div className="w-full mb-1 px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[8px] font-black text-amber-300 uppercase tracking-tight truncate shrink-0">
+                        Perikop: {slidePericopes.join(" • ")}
+                      </div>
+                    )}
                     <div className="flex-1 flex items-center justify-center overflow-hidden w-full h-full">
                       <p
                         className={`text-[11px] font-bold leading-relaxed line-clamp-4 ${isActive ? "text-white" : "text-gray-300"}`}
@@ -5661,13 +5598,15 @@ export default function OperatorDashboard() {
                     <div className="mt-2 h-5 flex items-center justify-between w-full select-none shrink-0">
                       {labels[idx] !== "" ? (
                         <span
-                          className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-tighter shrink-0 ${isActive ? "bg-blue-600 text-white" : "bg-zinc-800 text-zinc-400"}`}
+                          className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-tighter shrink-0 ${
+                            isActive
+                              ? "bg-blue-600 text-white"
+                              : isReffSlide
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "bg-zinc-800 text-zinc-400"
+                          }`}
                         >
-                          {labels[idx] !== undefined
-                            ? labels[idx]
-                            : isBible
-                              ? `Ayat ${idx + 1}`
-                              : `Verse ${idx + 1}`}
+                          {rawLabel}
                         </span>
                       ) : (
                         <span
@@ -6674,7 +6613,6 @@ export default function OperatorDashboard() {
                       setEditorActiveMenu(
                         editorActiveMenu === "gambar_bg" ? null : "gambar_bg",
                       );
-                      setEditorMediaTab("static");
                     }}
                     className={`flex flex-col items-center justify-center px-3 py-1 rounded hover:bg-zinc-700/50 transition-all border ${
                       editorActiveMenu === "gambar_bg"
@@ -6696,7 +6634,6 @@ export default function OperatorDashboard() {
                       setEditorActiveMenu(
                         editorActiveMenu === "video_bg" ? null : "video_bg",
                       );
-                      setEditorMediaTab("video");
                     }}
                     className={`flex flex-col items-center justify-center px-3 py-1 rounded hover:bg-zinc-700/50 transition-all border ${
                       editorActiveMenu === "video_bg"
@@ -9828,12 +9765,6 @@ export default function OperatorDashboard() {
                             : textAlign === "right"
                               ? "text-right items-end justify-end"
                               : "text-center items-center justify-center";
-                        const posClass =
-                          textPosition === "top"
-                            ? "items-start pt-8"
-                            : textPosition === "bottom"
-                              ? "items-end pb-8"
-                              : "items-center justify-center";
                         const weightClass = textBold
                           ? "font-bold"
                           : "font-normal";
@@ -10013,7 +9944,7 @@ export default function OperatorDashboard() {
                                 : "border-zinc-950 cursor-text"
                             }`}
                             style={{ containerType: "inline-size" }}
-                            onClick={(e) => {
+                            onClick={() => {
                               if (!isEditBgActive) {
                                 editorTextareaRef.current?.focus();
                               }
@@ -12568,6 +12499,7 @@ export default function OperatorDashboard() {
                       )
                     ) {
                       setShowAccountModal(false);
+                      publishOperatorStatus(false, false);
                       showToast(`Sesi ${username} telah ditutup.`, "info");
                       setTimeout(() => navigate("/"), 600);
                     }
@@ -13105,6 +13037,17 @@ export default function OperatorDashboard() {
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-5 pr-1 custom-scrollbar text-xs">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-xl text-left">
+                  <h4 className="text-[10px] font-black uppercase text-emerald-400 tracking-wider mb-1">
+                    Sumber Alkitab Online HKBP Aktif Otomatis
+                  </h4>
+                  <p className="text-[10.5px] text-gray-300 leading-relaxed">
+                    Alkitab Bahasa Indonesia (TB) dan Bahasa Batak Toba langsung terhubung ke sumber resmi{" "}
+                    <span className="text-emerald-300 font-mono">{HKBP_SOURCE_URLS.alkitab}</span>{" "}
+                    (judul perikop &amp; ayat dipisahkan otomatis) tanpa perlu unggah file database. Opsi di bawah hanya opsional bila ingin menambah terjemahan lain.
+                  </p>
+                </div>
+
                 {/* Unified Import Section with beautiful Sub-tabs */}
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
@@ -13404,6 +13347,19 @@ export default function OperatorDashboard() {
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
+              </div>
+
+              <div className="mb-3 p-3 bg-blue-500/10 border border-blue-500/25 rounded-xl text-left">
+                <h4 className="text-[10px] font-black uppercase text-blue-400 tracking-wider mb-1">
+                  Buku Ende &amp; Buku Nyanyian HKBP Aktif Otomatis
+                </h4>
+                <p className="text-[10.5px] text-gray-300 leading-relaxed">
+                  Katalog lengkap dari{" "}
+                  <span className="text-blue-300 font-mono">{HKBP_SOURCE_URLS.bukuEnde}</span> dan{" "}
+                  <span className="text-blue-300 font-mono">{HKBP_SOURCE_URLS.bukuNyanyian}</span>{" "}
+                  (semua bait &amp; reffrein) langsung tersedia di tab <strong>Buku Ende</strong> &amp;{" "}
+                  <strong>BN HKBP</strong> pada menu <strong>Lagu</strong> tanpa perlu unggah file database.
+                </p>
               </div>
 
               {/* Modal Sub-Tabs */}
@@ -14118,6 +14074,8 @@ Haleluya pujilah Dia...`}
                         ? "bible"
                         : "song",
                       verses: [...selectedSong.verses],
+                      verseLabels: selectedSong.verseLabels ? [...selectedSong.verseLabels] : undefined,
+                      pericopes: selectedSong.pericopes ? { ...selectedSong.pericopes } : undefined,
                     };
                     setEditingItem(item as ScheduleItem);
                   }

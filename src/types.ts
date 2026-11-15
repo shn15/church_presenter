@@ -49,6 +49,7 @@ export interface Song {
   artist?: string;
   verses: string[];
   verseLabels?: string[];
+  pericopes?: Record<number, string[]>;
   
   // Custom Styling
   textColor?: string;
@@ -93,6 +94,7 @@ export interface ScheduleItem {
   type: 'song' | 'bible' | 'media' | 'slide';
   verses: string[];
   verseLabels?: string[];
+  pericopes?: Record<number, string[]>;
 
   // Custom Styling
   textColor?: string;

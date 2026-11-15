@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, CSSProperties } from "react";
 import { useSocket } from "../../hooks/useSocket";
 import { motion, AnimatePresence } from "motion/react";
-import { Monitor, Lock, Clock, QrCode, Camera, RefreshCw, X, Keyboard, Check, AlertTriangle } from "lucide-react";
+import { Lock, Clock, QrCode, RefreshCw, X, Check, AlertTriangle, PowerOff } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { AppLogo } from "../Logo";
 import { Html5Qrcode } from "html5-qrcode";
@@ -215,8 +215,10 @@ const isLightBg = (bg: string | undefined): boolean => {
 };
 
 export default function ProjectorDisplay() {
-  const { currentSlide, currentShift, syncedSettings, mediaUpdateTick, requestCloudMedia } = useSocket();
+  const { currentSlide, currentShift, syncedSettings, mediaUpdateTick, requestCloudMedia, operatorStatus, pingOperator } = useSocket();
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+
+  const prevBlobUrlsRef = useRef<string[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -225,11 +227,13 @@ export default function ProjectorDisplay() {
         const list = await getAllMedia();
         if (!active) return;
         const mapping: Record<string, string> = {};
+        const createdUrls: string[] = [];
         list.forEach((item) => {
           try {
             let localUrl = "";
             if (item.file instanceof Blob && item.file.size > 0) {
               localUrl = URL.createObjectURL(item.file);
+              createdUrls.push(localUrl);
             }
             if (!localUrl) return;
 
@@ -244,7 +248,14 @@ export default function ProjectorDisplay() {
             console.warn("Skipped malformed IndexedDB media item:", item?.id, itemErr);
           }
         });
+        const oldUrls = prevBlobUrlsRef.current;
+        prevBlobUrlsRef.current = createdUrls;
         setMediaUrls(mapping);
+        if (oldUrls.length > 0) {
+          window.setTimeout(() => {
+            oldUrls.forEach((u) => URL.revokeObjectURL(u));
+          }, 500);
+        }
       } catch (err) {
         console.error("Failed to load IndexedDB media in ProjectorDisplay:", err);
       }
@@ -254,6 +265,13 @@ export default function ProjectorDisplay() {
       active = false;
     };
   }, [mediaUpdateTick]);
+
+  useEffect(() => {
+    return () => {
+      prevBlobUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      prevBlobUrlsRef.current = [];
+    };
+  }, []);
 
   // Automatically request any missing local/uploaded background or logo media over cloud sync
   useEffect(() => {
@@ -404,22 +422,6 @@ export default function ProjectorDisplay() {
   const [scannerInstance, setScannerInstance] = useState<Html5Qrcode | null>(null);
   const [scannerLoading, setScannerLoading] = useState(false);
   const [scanFeedbackMsg, setScanFeedbackMsg] = useState<string | null>(null);
-
-  // Mobile entrance greeting screen states
-  const [showWelcome, setShowWelcome] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const params = new URLSearchParams(window.location.search);
-    return params.get("mode") === "share";
-  });
-
-  useEffect(() => {
-    if (isMobileShare && showWelcome) {
-      const timer = setTimeout(() => {
-        setShowWelcome(false);
-      }, 3500);
-      return () => clearTimeout(timer);
-    }
-  }, [isMobileShare, showWelcome]);
 
   const startCameraScan = async () => {
     setScannerLoading(true);
@@ -830,6 +832,63 @@ export default function ProjectorDisplay() {
             <QrCode className="w-4 h-4" />
             Pindai QR Code Ibadah
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  const isSystemChecking =
+    isMobileShare &&
+    operatorStatus === null &&
+    currentSlide?.isLive !== false;
+
+  const isSystemInactive =
+    isMobileShare &&
+    (currentSlide?.isLive === false ||
+      (operatorStatus !== null && (!operatorStatus.active || !operatorStatus.isLive)));
+
+  if (isSystemChecking) {
+    return (
+      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
+        <div className="border border-white/10 bg-white/[0.02] p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-md">
+          <div className="w-14 h-14 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-5 text-blue-400">
+            <RefreshCw className="w-6 h-6 animate-spin" />
+          </div>
+          <h2 className="text-base font-black uppercase tracking-wider text-white mb-2">
+            Menghubungkan...
+          </h2>
+          <p className="text-xs text-gray-400 leading-relaxed">
+            Memeriksa status layanan ibadah aktif.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isSystemInactive) {
+    return (
+      <div className="bg-zinc-950 w-screen h-screen flex flex-col items-center justify-center text-white font-sans p-6 text-center">
+        <div className="border border-amber-500/20 bg-amber-500/5 p-8 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl backdrop-blur-md">
+          <div className="w-16 h-16 rounded-full bg-amber-500/10 border border-amber-500/25 flex items-center justify-center mb-5 text-amber-400">
+            <PowerOff className="w-8 h-8" />
+          </div>
+          <h2 className="text-lg font-black uppercase tracking-wider text-white mb-2">
+            System Nonaktif
+          </h2>
+          <p className="text-xs text-gray-300 leading-relaxed mb-6">
+            System nonaktif, tidak ada ibadah terdeteksi.
+          </p>
+          <button
+            type="button"
+            onClick={() => pingOperator()}
+            className="w-full py-3 px-5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-bold text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer mb-4"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Periksa Ulang
+          </button>
+          <div className="text-[10px] text-gray-500 font-mono uppercase tracking-widest border-t border-white/10 pt-4 w-full">
+            Church Presenter Cloud Sync
+          </div>
         </div>
       </div>
     );

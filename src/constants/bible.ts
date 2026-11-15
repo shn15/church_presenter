@@ -37,10 +37,10 @@ export const BIBLE_BOOKS_BATAK: Record<string, string> = {
   "Mazmur": "Psalmen",
   "Amsal": "Poda",
   "Pengkhotbah": "Parjamita",
-  "Kidung Agung": "Logulogu",
+  "Kidung Agung": "Angka Ende",
   "Yesaya": "Jesaya",
   "Yeremia": "Jeremia",
-  "Ratapan": "Andungabung",
+  "Ratapan": "Andung-andung",
   "Yehezkiel": "Hesekiel",
   "Daniel": "Daniel",
   "Hosea": "Hosea",
@@ -52,7 +52,7 @@ export const BIBLE_BOOKS_BATAK: Record<string, string> = {
   "Nahum": "Nahum",
   "Habakuk": "Habakuk",
   "Zefanya": "Sepania",
-  "Hagai": "Hagai",
+  "Hagai": "Haggai",
   "Zakharia": "Sakaria",
   "Maleakhi": "Maleaki",
   "Matius": "Mateus",
@@ -60,17 +60,17 @@ export const BIBLE_BOOKS_BATAK: Record<string, string> = {
   "Lukas": "Lukas",
   "Yohanes": "Johannes",
   "Kisah Para Rasul": "Ulaon ni Apostel",
-  "Roma": "Roma",
-  "1 Korintus": "1 Korintus",
-  "2 Korintus": "2 Korintus",
+  "Roma": "Rom",
+  "1 Korintus": "1 Korint",
+  "2 Korintus": "2 Korint",
   "Galatia": "Galatia",
-  "Efesus": "Efesus",
+  "Efesus": "Epesus",
   "Filipi": "Pilippi",
   "Kolose": "Kolosse",
-  "1 Tesalonika": "1 Tesalonika",
-  "2 Tesalonika": "2 Tesalonika",
-  "1 Timotius": "1 Timotius",
-  "2 Timotius": "2 Timotius",
+  "1 Tesalonika": "1 Tessalonik",
+  "2 Tesalonika": "2 Tessalonik",
+  "1 Timotius": "1 Timoteus",
+  "2 Timotius": "2 Timoteus",
   "Titus": "Titus",
   "Filemon": "Pilemon",
   "Ibrani": "Heber",
@@ -83,3 +83,45 @@ export const BIBLE_BOOKS_BATAK: Record<string, string> = {
   "Yudas": "Judas",
   "Wahyu": "Pangungkapon"
 };
+
+export const BIBLE_BOOK_ALIASES: Record<string, string> = {
+  "logulogu": "Kidung Agung",
+  "angka ende": "Kidung Agung",
+  "andungabung": "Ratapan",
+  "andung-andung": "Ratapan",
+  "hagai": "Hagai",
+  "haggai": "Hagai",
+  "roma": "Roma",
+  "rom": "Roma",
+  "1 korintus": "1 Korintus",
+  "1 korint": "1 Korintus",
+  "2 korintus": "2 Korintus",
+  "2 korint": "2 Korintus",
+  "efesus": "Efesus",
+  "epesus": "Efesus",
+  "1 tesalonika": "1 Tesalonika",
+  "1 tessalonik": "1 Tesalonika",
+  "2 tesalonika": "2 Tesalonika",
+  "2 tessalonik": "2 Tesalonika",
+  "1 timotius": "1 Timotius",
+  "1 timoteus": "1 Timotius",
+  "2 timotius": "2 Timotius",
+  "2 timoteus": "2 Timotius",
+};
+
+export function resolveCanonicalIndoBook(bookName: string): string {
+  const clean = (bookName || "").trim();
+  if (!clean) return "Kejadian";
+  const lower = clean.toLowerCase();
+
+  const directIndo = BIBLE_BOOKS.find((b) => b.toLowerCase() === lower);
+  if (directIndo) return directIndo;
+
+  const matchedBatak = Object.entries(BIBLE_BOOKS_BATAK).find(
+    ([, batak]) => batak.toLowerCase() === lower,
+  );
+  if (matchedBatak) return matchedBatak[0];
+
+  if (BIBLE_BOOK_ALIASES[lower]) return BIBLE_BOOK_ALIASES[lower];
+  return clean;
+}

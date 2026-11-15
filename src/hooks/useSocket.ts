@@ -4,6 +4,7 @@ import { Slide, Shift } from "../types";
 import { getActiveAccountId, getItemAccount, setItemAccount } from "../lib/accountManager";
 import {
   CloudSyncClient,
+  OperatorStatus,
   SyncedSettings,
   getSyncRoomId,
 } from "../lib/cloudSync";
@@ -65,13 +66,25 @@ export const useSocket = (explicitAccountId?: string) => {
   const syncRoomId = useMemo(() => getSyncRoomId(targetAccountId), [targetAccountId]);
   const isOperatorContext = useMemo(() => {
     if (typeof window === "undefined") return false;
-    return !window.location.pathname.includes("/projector");
+    return window.location.pathname.includes("/operator");
   }, []);
 
   const [socket, setSocket] = useState<Socket | null>(null);
   const [clientCount, setClientCount] = useState(0);
   const [mediaUpdateTick, setMediaUpdateTick] = useState(0);
   const cloudRef = useRef<CloudSyncClient | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const lastHeartbeatAtRef = useRef<number>(0);
+  const latestOperatorStatusRef = useRef<{ active: boolean; isLive: boolean }>({
+    active: true,
+    isLive: true,
+  });
+  const latestSlideRef = useRef<Slide | null>(null);
+
+  const [operatorStatus, setOperatorStatus] = useState<{
+    active: boolean;
+    isLive: boolean;
+  } | null>(() => (isOperatorContext ? { active: true, isLive: true } : null));
 
   const [currentSlide, setCurrentSlide] = useState<Slide | null>(() => {
     try {
@@ -120,6 +133,7 @@ export const useSocket = (explicitAccountId?: string) => {
 
   const applyIncomingSlide = useCallback((slide: Slide) => {
     const cleaned = cleanSlideForBroadcast(slide);
+    latestSlideRef.current = cleaned;
     setCurrentSlide((prev) => {
       if (prev && JSON.stringify(prev) === JSON.stringify(cleaned)) {
         return prev;
@@ -163,12 +177,29 @@ export const useSocket = (explicitAccountId?: string) => {
     } catch {}
   }, [targetAccountId]);
 
+  const applyIncomingOperatorStatus = useCallback((status: { active: boolean; isLive: boolean }) => {
+    if (status.active) {
+      lastHeartbeatAtRef.current = Date.now();
+    }
+    setOperatorStatus((prev) => {
+      if (prev && prev.active === status.active && prev.isLive === status.isLive) {
+        return prev;
+      }
+      return { active: Boolean(status.active), isLive: status.active ? status.isLive !== false : false };
+    });
+  }, []);
+
+  useEffect(() => {
+    latestSlideRef.current = currentSlide;
+  }, [currentSlide]);
+
   useEffect(() => {
     // 1. Serverless Cloud Sync (MQTT over WSS + WebRTC Media Transfer) — works everywhere including Vercel & Mobile Share
     const cloud = new CloudSyncClient(syncRoomId, isOperatorContext, {
       onSlide: (slide) => applyIncomingSlide(slide),
       onShift: (shift) => applyIncomingShift(shift),
       onSettings: (settings) => applyIncomingSettings(settings),
+      onOperatorStatus: (status: OperatorStatus) => applyIncomingOperatorStatus(status),
       onMediaReceived: () => {
         setMediaUpdateTick((t) => t + 1);
       },
@@ -191,10 +222,17 @@ export const useSocket = (explicitAccountId?: string) => {
         timeout: 8000,
         autoConnect: true,
       });
+      socketRef.current = newSocket;
       setSocket(newSocket);
 
       newSocket.on("connect", () => {
         newSocket?.emit("join:account", { accountId: targetAccountId });
+        if (isOperatorContext) {
+          newSocket?.emit("register:operator", {
+            accountId: targetAccountId,
+            isLive: latestOperatorStatusRef.current.isLive,
+          });
+        }
       });
 
       newSocket.on("connect_error", () => {
@@ -209,10 +247,15 @@ export const useSocket = (explicitAccountId?: string) => {
         applyIncomingShift(shift);
       });
 
+      newSocket.on("operator:status", (status: { active: boolean; isLive: boolean }) => {
+        applyIncomingOperatorStatus(status);
+      });
+
       newSocket.on("clients:count", (count: number) => {
         setClientCount(count);
       });
     } else {
+      socketRef.current = null;
       setSocket(null);
     }
 
@@ -237,6 +280,10 @@ export const useSocket = (explicitAccountId?: string) => {
         try {
           applyIncomingSettings(JSON.parse(e.newValue));
         } catch {}
+      } else if (e.key === `cp_operator_status_${targetAccountId}`) {
+        try {
+          applyIncomingOperatorStatus(JSON.parse(e.newValue));
+        } catch {}
       }
     };
     if (typeof window !== "undefined") {
@@ -255,6 +302,19 @@ export const useSocket = (explicitAccountId?: string) => {
           applyIncomingShift(event.data.shift);
         } else if (event.data?.type === "settings:update") {
           applyIncomingSettings(event.data.settings);
+        } else if (event.data?.type === "operator:status" && event.data.status) {
+          applyIncomingOperatorStatus(event.data.status);
+        } else if (event.data?.type === "operator:ping" && isOperatorContext) {
+          channel?.postMessage({
+            type: "operator:status",
+            status: latestOperatorStatusRef.current,
+          });
+          if (latestOperatorStatusRef.current.active && latestSlideRef.current) {
+            channel?.postMessage({
+              type: "slide:update",
+              slide: latestSlideRef.current,
+            });
+          }
         } else if (event.data?.type === "media:updated") {
           setMediaUpdateTick((t) => t + 1);
         }
@@ -262,25 +322,53 @@ export const useSocket = (explicitAccountId?: string) => {
 
       channel.addEventListener("message", handleBroadcast);
 
-      return () => {
-        cloud.destroy();
-        cloudRef.current = null;
-        newSocket?.disconnect();
-        window.removeEventListener("storage", handleStorage);
-        channel?.removeEventListener("message", handleBroadcast);
-        channel?.close();
-      };
+      if (!isOperatorContext) {
+        channel.postMessage({ type: "operator:ping" });
+      }
+    }
+
+    // 5. Viewer-side liveness & timeout detection when no operator is active
+    let initialTimeout: number | undefined;
+    let livenessInterval: number | undefined;
+    if (!isOperatorContext && typeof window !== "undefined") {
+      try {
+        const storedStatus = localStorage.getItem(`cp_operator_status_${targetAccountId}`);
+        if (storedStatus) {
+          const parsed = JSON.parse(storedStatus);
+          if (parsed && parsed.active === false && typeof parsed.ts === "number" && Date.now() - parsed.ts < 60000) {
+            setOperatorStatus({ active: false, isLive: false });
+          }
+        }
+      } catch {}
+
+      initialTimeout = window.setTimeout(() => {
+        setOperatorStatus((prev) =>
+          prev === null ? { active: false, isLive: false } : prev
+        );
+      }, 3500);
+
+      livenessInterval = window.setInterval(() => {
+        if (lastHeartbeatAtRef.current > 0 && Date.now() - lastHeartbeatAtRef.current > 26000) {
+          setOperatorStatus({ active: false, isLive: false });
+        }
+      }, 4000);
     }
 
     return () => {
+      if (initialTimeout) window.clearTimeout(initialTimeout);
+      if (livenessInterval) window.clearInterval(livenessInterval);
       cloud.destroy();
       cloudRef.current = null;
       newSocket?.disconnect();
+      socketRef.current = null;
       if (typeof window !== "undefined") {
         window.removeEventListener("storage", handleStorage);
       }
+      if (channel) {
+        channel.close();
+      }
     };
-  }, [targetAccountId, targetServerUrl, syncRoomId, isOperatorContext, applyIncomingSlide, applyIncomingShift, applyIncomingSettings]);
+  }, [targetAccountId, targetServerUrl, syncRoomId, isOperatorContext, applyIncomingSlide, applyIncomingShift, applyIncomingSettings, applyIncomingOperatorStatus]);
 
   const changeSlide = useCallback((slide: Slide) => {
     const cleaned = cleanSlideForBroadcast(slide);
@@ -344,6 +432,57 @@ export const useSocket = (explicitAccountId?: string) => {
     }
   }, [targetAccountId]);
 
+  const publishOperatorStatus = useCallback(
+    (active: boolean, liveState: boolean) => {
+      const payload = { active, isLive: active ? liveState : false };
+      latestOperatorStatusRef.current = payload;
+      setOperatorStatus(payload);
+      try {
+        localStorage.setItem(
+          `cp_operator_status_${targetAccountId}`,
+          JSON.stringify({ ...payload, ts: Date.now() })
+        );
+      } catch {}
+
+      if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+        const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
+        channel.postMessage({ type: "operator:status", status: payload });
+        channel.close();
+      }
+
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("operator:status", {
+          accountId: targetAccountId,
+          active: payload.active,
+          isLive: payload.isLive,
+        });
+      }
+
+      cloudRef.current?.publishOperatorStatus(payload);
+    },
+    [targetAccountId]
+  );
+
+  const pingOperator = useCallback(() => {
+    setOperatorStatus(null);
+    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
+      channel.postMessage({ type: "operator:ping" });
+      channel.close();
+    }
+    if (socketRef.current?.connected) {
+      socketRef.current.emit("join:account", { accountId: targetAccountId });
+    }
+    cloudRef.current?.pingOperator();
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        setOperatorStatus((prev) =>
+          prev === null ? { active: false, isLive: false } : prev
+        );
+      }, 3500);
+    }
+  }, [targetAccountId]);
+
   return useMemo(
     () => ({
       socket,
@@ -358,6 +497,9 @@ export const useSocket = (explicitAccountId?: string) => {
       mediaUpdateTick,
       requestCloudMedia,
       notifyMediaUpdated,
+      operatorStatus,
+      publishOperatorStatus,
+      pingOperator,
     }),
     [
       socket,
@@ -372,6 +514,9 @@ export const useSocket = (explicitAccountId?: string) => {
       mediaUpdateTick,
       requestCloudMedia,
       notifyMediaUpdated,
+      operatorStatus,
+      publishOperatorStatus,
+      pingOperator,
     ]
   );
 };
