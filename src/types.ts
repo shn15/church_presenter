@@ -23,7 +23,9 @@ export interface Slide {
   shapeDecoration?: string;
   textTracking?: 'tighter' | 'tight' | 'normal' | 'wide' | 'widest';
   textSpacing?: 'relaxed' | 'snug' | 'normal' | 'loose';
-  slideTransition?: 'fade' | 'slide' | 'zoom' | 'none';
+  slideTransition?: string;
+  textAnimation?: string;
+  animationSpeed?: 'fast' | 'normal' | 'slow';
   textOutline?: boolean;
   textOutlineColor?: string;
   bgOpacity?: number;
@@ -66,7 +68,9 @@ export interface Song {
   shapeDecoration?: string;
   textTracking?: 'tighter' | 'tight' | 'normal' | 'wide' | 'widest';
   textSpacing?: 'relaxed' | 'snug' | 'normal' | 'loose';
-  slideTransition?: 'fade' | 'slide' | 'zoom' | 'none';
+  slideTransition?: string;
+  textAnimation?: string;
+  animationSpeed?: 'fast' | 'normal' | 'slow';
   textOutline?: boolean;
   textOutlineColor?: string;
   bgOpacity?: number;
@@ -108,9 +112,12 @@ export interface ScheduleItem {
   fontFamily?: string;
   textTransform?: 'uppercase' | 'none';
   backgroundOverride?: string;
+  shapeDecoration?: string;
   textTracking?: 'tighter' | 'tight' | 'normal' | 'wide' | 'widest';
   textSpacing?: 'relaxed' | 'snug' | 'normal' | 'loose';
-  slideTransition?: 'fade' | 'slide' | 'zoom' | 'none';
+  slideTransition?: string;
+  textAnimation?: string;
+  animationSpeed?: 'fast' | 'normal' | 'slow';
   textOutline?: boolean;
   textOutlineColor?: string;
   bgOpacity?: number;

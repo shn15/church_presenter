@@ -1,4 +1,4 @@
-import { Song } from "../types";
+import { ScheduleItem, Song } from "../types";
 import {
   BIBLE_BOOKS,
   BIBLE_BOOKS_BATAK,
@@ -249,9 +249,148 @@ export async function fetchHkbpSongCatalog(
   return items;
 }
 
+function formatSongIntroTitle(rawTitle: string): string {
+  const cleaned = String(rawTitle || "")
+    .trim()
+    .replace(/^((?:BE|BN|KJ|PKJ|NKB|NR|KPKA|DSL)\s+[0-9]+[a-z]?)[.:]\s*/i, "$1 ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.toUpperCase();
+}
+
+function hasExplicitVerseNumberPrefix(text: string): boolean {
+  const firstLine = (String(text || "").trim().split(/\r?\n/)[0] || "").trim();
+  return /^\d+\s*\.?$/.test(firstLine) || /^\d+[.)]\s+\S/.test(firstLine);
+}
+
+function hasExplicitReffPrefix(text: string): boolean {
+  const firstLine = (String(text || "").trim().split(/\r?\n/)[0] || "").trim();
+  return (
+    /^(?:reff|reffrain|refrain|chorus)\.?$/i.test(firstLine) ||
+    /^(?:reff|reffrain|refrain|chorus)[:.\-]\s+\S/i.test(firstLine)
+  );
+}
+
+function formatVerseTextWithNumber(text: string, verseNumber: number): string {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return `${verseNumber}`;
+  if (hasExplicitVerseNumberPrefix(trimmed)) return trimmed;
+  return `${verseNumber}\n${trimmed}`;
+}
+
+function formatReffText(text: string): string {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "Reff";
+  if (hasExplicitReffPrefix(trimmed)) return trimmed;
+  return `Reff\n${trimmed}`;
+}
+
 /**
- * Converts HKBP lyric blocks (`verse`, `reff`, `refrain`) into clean projection slides,
- * ensuring ALL verses AND refrains are included and properly labeled (`Bait 1`, `Reff`, `Bait 2`, `Reff`, ...).
+ * Ensures any Song or Song ScheduleItem has:
+ * 1) Slide 1: Song Number & Title (e.g. "BE 21 BEGE MA SUDE HAMU") labeled "Judul"
+ * 2) Verse slides prefixed with verse number ("1\n...", "2\n...", "Reff\n...")
+ * Skips Bible passages, presentations, and media items untouched.
+ */
+export function ensureSongTitleAndVerseSlides<T extends Song | ScheduleItem>(item: T): T {
+  if (!item) return item;
+  const anyItem = item as any;
+  const itemType = String(anyItem.type || "").toLowerCase();
+  if (
+    item.id?.startsWith("bible-") ||
+    item.id?.startsWith("presentation-") ||
+    itemType === "bible" ||
+    itemType === "slide" ||
+    itemType === "presentation" ||
+    itemType === "media"
+  ) {
+    return item;
+  }
+
+  const rawVerses = Array.isArray(item.verses) ? item.verses : [];
+  if (rawVerses.length === 0) return item;
+
+  const rawLabels = Array.isArray(item.verseLabels) ? item.verseLabels : [];
+  const introTitle = formatSongIntroTitle(item.title || "LAGU");
+  const normalizedRawTitle = String(item.title || "").replace(/\s+/g, " ").trim().toUpperCase();
+
+  const firstLabel = String(rawLabels[0] || "").trim();
+  const hasTitleLabel = /^(?:judul|judul lagu|title|intro)$/i.test(firstLabel);
+  const firstVerseNorm = String(rawVerses[0] || "").replace(/\s+/g, " ").trim().toUpperCase();
+  const firstLooksLikeTitle =
+    Boolean(introTitle) &&
+    (firstVerseNorm === introTitle || firstVerseNorm === normalizedRawTitle);
+
+  const nextVerses = [...rawVerses];
+  const nextLabels = rawVerses.map((_, idx) =>
+    rawLabels[idx] !== undefined ? rawLabels[idx] : "",
+  );
+
+  let hasIntroSlide = hasTitleLabel || firstLooksLikeTitle;
+  if (!hasIntroSlide && introTitle) {
+    nextVerses.unshift(introTitle);
+    nextLabels.unshift("Judul");
+    hasIntroSlide = true;
+  } else if (hasIntroSlide && !hasTitleLabel) {
+    nextLabels[0] = "Judul";
+  }
+
+  const startIdx = hasIntroSlide ? 1 : 0;
+  let verseNum = 0;
+
+  for (let i = startIdx; i < nextVerses.length; i++) {
+    const lbl = nextLabels[i];
+    const txt = String(nextVerses[i] || "").trim();
+
+    // Explicit split continuation slide keeps empty label and no new verse prefix
+    if (lbl === "" && rawLabels.length > 0) {
+      continue;
+    }
+
+    const isReff =
+      /^(?:reff|reffrain|refrain|chorus|paduan\s*suara)/i.test(lbl || "") ||
+      /^(?:reff|reffrain|refrain|chorus)\b/i.test(txt);
+
+    if (isReff) {
+      if (txt) {
+        nextVerses[i] = formatReffText(txt);
+      }
+      if (!lbl || /^(?:slide|verse|bait|ayat)\s*\d*$/i.test(lbl)) {
+        nextLabels[i] = "Reff";
+      }
+    } else {
+      verseNum++;
+      if (txt) {
+        nextVerses[i] = formatVerseTextWithNumber(txt, verseNum);
+      }
+      if (!lbl || /^(?:slide|verse|bait|ayat)\s*\d*$/i.test(lbl)) {
+        nextLabels[i] = `Ayat ${verseNum}`;
+      }
+    }
+  }
+
+  const sameVerses =
+    nextVerses.length === rawVerses.length &&
+    nextVerses.every((v, idx) => v === rawVerses[idx]);
+  const sameLabels =
+    nextLabels.length === rawLabels.length &&
+    nextLabels.every((l, idx) => l === rawLabels[idx]);
+
+  if (sameVerses && sameLabels) {
+    return item;
+  }
+
+  return {
+    ...item,
+    verses: nextVerses,
+    verseLabels: nextLabels,
+  };
+}
+
+/**
+ * Converts HKBP lyric blocks (`verse`, `reff`, `refrain`) into clean projection slides:
+ * - Slide 1: Song number & title (e.g. "BE 21 BEGE MA SUDE HAMU")
+ * - Verse slides: prefixed with verse number ("1\n...", "2\n...") and "Reff\n..."
+ * Ensuring ALL verses AND refrains are included and properly labeled (`Judul`, `Ayat 1`, `Reff`, `Ayat 2`, ...).
  */
 export function buildHkbpSongSlides(
   rawLirik: RawHkbpLyricBlock[],
@@ -260,6 +399,10 @@ export function buildHkbpSongSlides(
   judul: string,
   extraMeta?: { tonalitas?: string; nomorBukuLagu?: string },
 ): Song {
+  const prefix = bookType === "be" ? "BE" : "BN";
+  const cleanTitle = cleanHkbpSongTitle(judul, bookType, nomorLagu);
+  const introSlideText = `${prefix} ${nomorLagu} ${cleanTitle}`.replace(/\s+/g, " ").trim().toUpperCase();
+
   const blocks = (Array.isArray(rawLirik) ? rawLirik : []).filter(
     (b) =>
       Array.isArray(b?.lines) &&
@@ -271,12 +414,13 @@ export function buildHkbpSongSlides(
     const t = String(b?.type || "").toLowerCase();
     return t === "reff" || t === "refrain";
   });
-  const primaryReffText = firstReffBlock
+  const primaryReffRawText = firstReffBlock
     ? (firstReffBlock.lines || []).map((l) => String(l).trim()).filter(Boolean).join("\n")
     : "";
+  const primaryReffText = primaryReffRawText ? formatReffText(primaryReffRawText) : "";
 
-  const verses: string[] = [];
-  const verseLabels: string[] = [];
+  const verses: string[] = [introSlideText];
+  const verseLabels: string[] = ["Judul"];
   let verseNumber = 0;
 
   for (let i = 0; i < blocks.length; i++) {
@@ -291,12 +435,12 @@ export function buildHkbpSongSlides(
     const isReff = blockType === "reff" || blockType === "refrain";
 
     if (isReff) {
-      verses.push(text);
+      verses.push(formatReffText(text));
       verseLabels.push("Reff");
     } else {
       verseNumber++;
-      verses.push(text);
-      verseLabels.push(`Bait ${verseNumber}`);
+      verses.push(formatVerseTextWithNumber(text, verseNumber));
+      verseLabels.push(`Ayat ${verseNumber}`);
 
       // In Buku Ende (`BE`), many songs write the `reff` block only once after Bait 1
       // (or in the CDN JSON only after verse 1). If the song has a Reff and the next block
@@ -314,13 +458,11 @@ export function buildHkbpSongSlides(
     }
   }
 
-  if (verses.length === 0) {
-    verses.push(`${judul}`);
-    verseLabels.push("Bait 1");
+  if (verses.length === 1) {
+    verses.push(formatVerseTextWithNumber(cleanTitle, 1));
+    verseLabels.push("Ayat 1");
   }
 
-  const prefix = bookType === "be" ? "BE" : "BN";
-  const cleanTitle = cleanHkbpSongTitle(judul, bookType, nomorLagu);
   const baseArtist =
     bookType === "be" ? "Buku Ende HKBP" : "Buku Nyanyian HKBP";
   const metaParts = [baseArtist];

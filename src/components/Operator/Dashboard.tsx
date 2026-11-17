@@ -61,6 +61,11 @@ import {
   Globe,
   Sun,
   Moon,
+  Sparkles,
+  GripVertical,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
 } from "lucide-react";
 import {
   BIBLE_BOOKS,
@@ -70,11 +75,18 @@ import {
 import {
   HKBP_SOURCE_URLS,
   HkbpSongCatalogItem,
+  ensureSongTitleAndVerseSlides,
   fetchHkbpBibleChapter,
   fetchHkbpSongCatalog,
   fetchHkbpSongDetail,
 } from "../../lib/hkbpSource";
 import { motion, AnimatePresence } from "motion/react";
+import {
+  SLIDE_ANIMATION_PRESETS,
+  TEXT_ANIMATION_PRESETS,
+  getSlideTransitionMotion,
+  getTextLineMotionVariant,
+} from "../../lib/slideAnimations";
 import { QRCodeSVG } from "qrcode.react";
 import {
   saveMedia,
@@ -360,6 +372,7 @@ export default function OperatorDashboard() {
     let verseCount = 0;
     let bioCount = 0;
     const usesBait = currentLabels?.some((l) => /^bait\s+\d+/i.test(l || ""));
+    const usesAyat = currentLabels?.some((l) => /^ayat\s+\d+/i.test(l || ""));
 
     return verses.map((verseText, idx) => {
       const existingLabel = currentLabels?.[idx];
@@ -376,6 +389,11 @@ export default function OperatorDashboard() {
         }
         return `Ayat ${bioCount}`;
       } else {
+        // Preserve song title intro slide label
+        if (existingLabel && /^(?:judul|judul lagu|title|intro)$/i.test(existingLabel.trim())) {
+          return "Judul";
+        }
+
         // It's a song
         const isChorus =
           /^(?:reff|chorus|reffrain|refrain|paduan\s*suara)\b/i.test(verseText.trim()) ||
@@ -383,10 +401,14 @@ export default function OperatorDashboard() {
             /reff|chorus|reffrain|refrain|paduan\s*suara/i.test(existingLabel));
 
         if (isChorus) {
-          return existingLabel && /^reff/i.test(existingLabel) ? "Reff" : usesBait ? "Reff" : "Chorus";
+          return existingLabel && /^reff/i.test(existingLabel)
+            ? "Reff"
+            : usesBait || usesAyat
+              ? "Reff"
+              : "Chorus";
         } else {
           verseCount++;
-          return usesBait ? `Bait ${verseCount}` : `Verse ${verseCount}`;
+          return usesAyat ? `Ayat ${verseCount}` : usesBait ? `Bait ${verseCount}` : `Verse ${verseCount}`;
         }
       }
     });
@@ -1629,13 +1651,15 @@ export default function OperatorDashboard() {
 
       if (title && title.trim()) {
         const finalLabels = regenerateSlideLabels(verses, verseLabels, false);
-        parsedSongs.push({
-          id: `txt-song-${idx}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-          title: title.trim(),
-          artist: artist.trim(),
-          verses: verses.length > 0 ? verses : ["(Lirik kosong)"],
-          verseLabels: finalLabels,
-        });
+        parsedSongs.push(
+          ensureSongTitleAndVerseSlides({
+            id: `txt-song-${idx}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            title: title.trim(),
+            artist: artist.trim(),
+            verses: verses.length > 0 ? verses : ["(Lirik kosong)"],
+            verseLabels: finalLabels,
+          }),
+        );
       }
     });
 
@@ -1646,7 +1670,10 @@ export default function OperatorDashboard() {
   const [schedule, setSchedule] = useState<ScheduleItem[]>(() => {
     try {
       const saved = localStorage.getItem("cp_last_schedule");
-      return saved ? JSON.parse(saved) : [];
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed)
+        ? parsed.map((item) => ensureSongTitleAndVerseSlides(item))
+        : [];
     } catch {
       return [];
     }
@@ -1674,20 +1701,163 @@ export default function OperatorDashboard() {
     }
   }, [editingItem?.id, editingItem?.verses?.length]);
 
-  // States for Edit Menu Popovers/Submenus (Scripture, Shape, Media, Arrange)
+  // States for Edit Menu Popovers/Submenus (Scripture, Shape, Media, Animation)
   const [editorActiveMenu, setEditorActiveMenu] = useState<
     | "scripture"
     | "shape"
     | "media"
     | "gambar_bg"
     | "video_bg"
-    | "arrange"
+    | "animation"
     | "logo_overlay"
     | null
   >(null);
   const [editorLogoSlot, setEditorLogoSlot] = useState<"left" | "right">(
     "left",
   );
+  const [editorAnimTab, setEditorAnimTab] = useState<"slide" | "text">("slide");
+  const [editorAnimPreviewTick, setEditorAnimPreviewTick] = useState(0);
+  const [editorAnimPreviewMode, setEditorAnimPreviewMode] = useState<
+    "slide" | "text" | "both"
+  >("both");
+  const [isAnimPreviewPlaying, setIsAnimPreviewPlaying] = useState(false);
+  const animPreviewTimerRef = useRef<number | null>(null);
+
+  const triggerAnimPreview = (
+    mode: "slide" | "text" | "both",
+    speedOverride?: string,
+  ) => {
+    setEditorAnimPreviewMode(mode);
+    setEditorAnimPreviewTick((t) => t + 1);
+    setIsAnimPreviewPlaying(true);
+    if (animPreviewTimerRef.current) {
+      window.clearTimeout(animPreviewTimerRef.current);
+    }
+    const spd = speedOverride || editingItem?.animationSpeed || "normal";
+    const timeoutMs = spd === "slow" ? 2600 : spd === "fast" ? 1300 : 1900;
+    animPreviewTimerRef.current = window.setTimeout(() => {
+      setIsAnimPreviewPlaying(false);
+    }, timeoutMs);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (animPreviewTimerRef.current) {
+        window.clearTimeout(animPreviewTimerRef.current);
+      }
+    };
+  }, []);
+
+  const applyAnimationUpdate = (patch: Partial<ScheduleItem>) => {
+    if (!editingItem) return;
+    const updatedItem: ScheduleItem = { ...editingItem, ...patch };
+    setEditingItem(updatedItem);
+
+    const matchesId = (targetId?: string, targetSongId?: string) =>
+      targetId === updatedItem.id ||
+      targetSongId === updatedItem.id ||
+      (Boolean(updatedItem.songId) &&
+        (targetId === updatedItem.songId ||
+          targetSongId === updatedItem.songId));
+
+    if (selectedSong && matchesId(selectedSong.id)) {
+      setSelectedSong({ ...selectedSong, ...patch } as Song);
+    }
+
+    let schedChanged = false;
+    const newSched = schedule.map((s) => {
+      if (matchesId(s.id, s.songId)) {
+        schedChanged = true;
+        return { ...s, ...patch };
+      }
+      return s;
+    });
+    if (schedChanged) {
+      setSchedule(newSched);
+      localStorage.setItem("cp_last_schedule", JSON.stringify(newSched));
+    }
+
+    if (updatedItem.type === "song") {
+      setLibrarySongs((prev) => {
+        const next = prev.map((ls) =>
+          matchesId(ls.id) ? { ...ls, ...patch, updatedAt: Date.now() } : ls,
+        );
+        savePersistentSongs(currentAccountId, next);
+        return next;
+      });
+    }
+
+    setLibraryPresentations((prev) =>
+      prev.map((lp) => (matchesId(lp.id) ? { ...lp, ...patch } : lp)),
+    );
+
+    if (previewSlide && matchesId(previewSlide.parentId)) {
+      const updatedPreview: Slide = { ...previewSlide, ...patch };
+      setPreviewSlide(updatedPreview);
+      standbySlide.current = updatedPreview;
+    }
+
+    if (currentSlide && matchesId(currentSlide.parentId)) {
+      changeSlide({ ...currentSlide, ...patch });
+    }
+  };
+
+  const [dragSlideIdx, setDragSlideIdx] = useState<number | null>(null);
+  const [dragOverSlideIdx, setDragOverSlideIdx] = useState<number | null>(null);
+  const [slideInputLockDrag, setSlideInputLockDrag] = useState(false);
+
+  const moveEditorSlide = (fromIdx: number, toIdx: number) => {
+    if (
+      !editingItem ||
+      fromIdx === toIdx ||
+      fromIdx < 0 ||
+      toIdx < 0 ||
+      fromIdx >= editingItem.verses.length ||
+      toIdx >= editingItem.verses.length
+    ) {
+      return;
+    }
+    const newVerses = [...editingItem.verses];
+    const [movedVerse] = newVerses.splice(fromIdx, 1);
+    newVerses.splice(toIdx, 0, movedVerse);
+
+    const isBible =
+      editingItem.id?.startsWith("bible-") || editingItem.type === "bible";
+    const originalLabels = editingItem.verseLabels
+      ? [...editingItem.verseLabels]
+      : editingItem.verses.map((_, idx) =>
+          isBible ? `Ayat ${idx + 1}` : `Verse ${idx + 1}`,
+        );
+    const tempLabels = [...originalLabels];
+    const [movedLabel] = tempLabels.splice(fromIdx, 1);
+    tempLabels.splice(toIdx, 0, movedLabel ?? "");
+
+    const newLabels = regenerateSlideLabels(newVerses, tempLabels, isBible);
+    const updatedItem: ScheduleItem = {
+      ...editingItem,
+      verses: newVerses,
+      verseLabels: newLabels,
+    };
+
+    setEditingItem(updatedItem);
+
+    // Keep editorPreviewIdx pointed at the same logical slide after reorder
+    setEditorPreviewIdx((prev) => {
+      if (prev === fromIdx) return toIdx;
+      if (fromIdx < prev && prev <= toIdx) return prev - 1;
+      if (toIdx <= prev && prev < fromIdx) return prev + 1;
+      return prev;
+    });
+
+    if (selectedSong && selectedSong.id === updatedItem.id) {
+      setSelectedSong(updatedItem as any);
+    }
+    const newSched = schedule.map((s) =>
+      s.id === updatedItem.id ? updatedItem : s,
+    );
+    setSchedule(newSched);
+    localStorage.setItem("cp_last_schedule", JSON.stringify(newSched));
+  };
 
   // Dragging background image states & mouse handling
   const [isDraggingBg, setIsDraggingBg] = useState(false);
@@ -2640,7 +2810,9 @@ export default function OperatorDashboard() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((s) => ensureSongTitleAndVerseSlides(s));
+        }
       } catch (e) {
         console.error("Failed to parse saved library songs:", e);
       }
@@ -2684,10 +2856,11 @@ export default function OperatorDashboard() {
       try {
         const idbSongs = await getPersistentSongs(currentAccountId);
         if (Array.isArray(idbSongs) && idbSongs.length > 0) {
+          const normalizedIdb = idbSongs.map((s) => ensureSongTitleAndVerseSlides(s));
           setLibrarySongs((prev) => {
-            if (prev.length === 0) return idbSongs;
+            if (prev.length === 0) return normalizedIdb;
             const prevIds = new Set(prev.map((s) => s.id));
-            const toAdd = idbSongs.filter((s) => !prevIds.has(s.id));
+            const toAdd = normalizedIdb.filter((s) => !prevIds.has(s.id));
             return [...prev, ...toAdd];
           });
         }
@@ -2698,7 +2871,8 @@ export default function OperatorDashboard() {
       try {
         const idbSched = await getPersistentSchedule(currentAccountId);
         if (Array.isArray(idbSched) && idbSched.length > 0) {
-          setSchedule((prev) => (prev.length === 0 ? idbSched : prev));
+          const normalizedSched = idbSched.map((item) => ensureSongTitleAndVerseSlides(item));
+          setSchedule((prev) => (prev.length === 0 ? normalizedSched : prev));
         }
       } catch (err) {
         console.warn("IndexedDB schedule hydration error:", err);
@@ -2720,9 +2894,10 @@ export default function OperatorDashboard() {
         if (resSongs.ok && ctSongs.includes("application/json")) {
           const songs = await resSongs.json();
           if (Array.isArray(songs) && songs.length > 0) {
+            const normalizedServer = songs.map((s) => ensureSongTitleAndVerseSlides(s));
             setLibrarySongs((prev) => {
               const serverTitles = new Set(
-                songs.map((s) => s.title.toLowerCase()),
+                normalizedServer.map((s) => s.title.toLowerCase()),
               );
               const uniqueLocal = prev.filter((s) => {
                 if (!s || !s.title) return false;
@@ -2731,7 +2906,7 @@ export default function OperatorDashboard() {
                   !s.id.startsWith("mock-")
                 );
               });
-              return [...songs, ...uniqueLocal];
+              return [...normalizedServer, ...uniqueLocal];
             });
           }
         }
@@ -2980,36 +3155,39 @@ export default function OperatorDashboard() {
   };
 
   const addToSchedule = (item: Song | ScheduleItem) => {
+    const preparedItem = ensureSongTitleAndVerseSlides(item);
     const newItem: ScheduleItem = {
       id: Math.random().toString(36).substr(2, 9),
-      songId: item.id,
-      title: item.title,
-      artist: (item as Song).artist || "Custom",
-      type: item.id.startsWith("bible-") ? "bible" : "song",
-      verses: [...item.verses],
-      verseLabels: item.verseLabels ? [...item.verseLabels] : undefined,
-      pericopes: (item as any).pericopes ? { ...(item as any).pericopes } : undefined,
-      fontFamily: (item as any).fontFamily,
-      textColor: (item as any).textColor,
-      fontSizeMode: (item as any).fontSizeMode,
-      fontSize: (item as any).fontSize,
-      textTracking: (item as any).textTracking,
-      textSpacing: (item as any).textSpacing,
-      textOutline: (item as any).textOutline,
-      textOutlineColor: (item as any).textOutlineColor,
-      slideTransition: (item as any).slideTransition,
-      textBold: (item as any).textBold,
-      textItalic: (item as any).textItalic,
-      textShadow: (item as any).textShadow,
-      textTransform: (item as any).textTransform,
-      backgroundOverride: (item as any).backgroundOverride,
-      textAlign: (item as any).textAlign,
-      textPosition: (item as any).textPosition,
-      bgOpacity: (item as any).bgOpacity,
-      bgBrightness: (item as any).bgBrightness,
-      bgBlur: (item as any).bgBlur,
-      bgFit: (item as any).bgFit,
-      bgScale: (item as any).bgScale,
+      songId: preparedItem.id,
+      title: preparedItem.title,
+      artist: (preparedItem as Song).artist || "Custom",
+      type: preparedItem.id.startsWith("bible-") ? "bible" : "song",
+      verses: [...preparedItem.verses],
+      verseLabels: preparedItem.verseLabels ? [...preparedItem.verseLabels] : undefined,
+      pericopes: (preparedItem as any).pericopes ? { ...(preparedItem as any).pericopes } : undefined,
+      fontFamily: (preparedItem as any).fontFamily,
+      textColor: (preparedItem as any).textColor,
+      fontSizeMode: (preparedItem as any).fontSizeMode,
+      fontSize: (preparedItem as any).fontSize,
+      textTracking: (preparedItem as any).textTracking,
+      textSpacing: (preparedItem as any).textSpacing,
+      textOutline: (preparedItem as any).textOutline,
+      textOutlineColor: (preparedItem as any).textOutlineColor,
+      slideTransition: (preparedItem as any).slideTransition,
+      textAnimation: (preparedItem as any).textAnimation,
+      animationSpeed: (preparedItem as any).animationSpeed,
+      textBold: (preparedItem as any).textBold,
+      textItalic: (preparedItem as any).textItalic,
+      textShadow: (preparedItem as any).textShadow,
+      textTransform: (preparedItem as any).textTransform,
+      backgroundOverride: (preparedItem as any).backgroundOverride,
+      textAlign: (preparedItem as any).textAlign,
+      textPosition: (preparedItem as any).textPosition,
+      bgOpacity: (preparedItem as any).bgOpacity,
+      bgBrightness: (preparedItem as any).bgBrightness,
+      bgBlur: (preparedItem as any).bgBlur,
+      bgFit: (preparedItem as any).bgFit,
+      bgScale: (preparedItem as any).bgScale,
     };
     setSchedule([...schedule, newItem]);
     setActiveTab("schedule");
@@ -3060,18 +3238,19 @@ export default function OperatorDashboard() {
     textMsg: string,
   ) => {
     try {
-      savePersistentSongs(currentAccountId, updatedSongs);
-      setLibrarySongs(updatedSongs);
+      const normalizedSongs = updatedSongs.map((s) => ensureSongTitleAndVerseSlides(s));
+      savePersistentSongs(currentAccountId, normalizedSongs);
+      setLibrarySongs(normalizedSongs);
       setSearch("");
       setActiveTab("library");
-      if (updatedSongs.length > 0) {
-        setSelectedSong(updatedSongs[0]);
+      if (normalizedSongs.length > 0) {
+        setSelectedSong(normalizedSongs[0]);
       }
       setShowSongDbModal(false);
       showToast(textMsg, "success");
 
       // Explicit immediate sync POST to guarantee backend has latest library backup
-      await syncSongsToBackend(updatedSongs);
+      await syncSongsToBackend(normalizedSongs);
     } catch (err: any) {
       console.error("Gagal koordinasi backup data impor:", err);
     }
@@ -3690,6 +3869,8 @@ export default function OperatorDashboard() {
           textTracking: schItem.textTracking,
           textSpacing: schItem.textSpacing,
           slideTransition: schItem.slideTransition,
+          textAnimation: schItem.textAnimation,
+          animationSpeed: schItem.animationSpeed,
           textOutline: schItem.textOutline,
           textOutlineColor: schItem.textOutlineColor,
           bgOpacity: schItem.bgOpacity,
@@ -3722,6 +3903,8 @@ export default function OperatorDashboard() {
           textTracking: sSong.textTracking,
           textSpacing: sSong.textSpacing,
           slideTransition: sSong.slideTransition,
+          textAnimation: sSong.textAnimation,
+          animationSpeed: sSong.animationSpeed,
           textOutline: sSong.textOutline,
           textOutlineColor: sSong.textOutlineColor,
           bgOpacity: sSong.bgOpacity,
@@ -4034,14 +4217,14 @@ export default function OperatorDashboard() {
     setShowNewSubmenu(false);
     if (action === "new-song") {
       const title = "Lagu Baru";
-      const newItem: ScheduleItem = {
+      const newItem: ScheduleItem = ensureSongTitleAndVerseSlides({
         id: Math.random().toString(36).substr(2, 9),
         title,
         artist: "Manual Entry",
         type: "song",
-        verses: ["Bait 1 lirik di sini\nBaris kedua lirik lagu"],
-        verseLabels: ["Bait 1"],
-      };
+        verses: ["Lirik ayat 1 di sini\nBaris kedua lirik lagu"],
+        verseLabels: ["Ayat 1"],
+      });
       setSchedule((prev) => [...prev, newItem]);
       setSelectedSong(newItem as any);
       setEditingItem(newItem);
@@ -4085,11 +4268,11 @@ export default function OperatorDashboard() {
 
   return (
     <div
-      className="flex flex-col h-screen bg-[#07080B] text-slate-300 font-sans overflow-hidden"
+      className="flex flex-col h-screen bg-[#000000] text-slate-200 font-sans overflow-hidden"
       onClick={() => setActiveMenu(null)}
     >
       {/* Top Navigation Bar */}
-      <nav className="flex items-center justify-between px-4 py-2 bg-[#0C0E12]/95 backdrop-blur-md border-b border-white/[0.08] z-50">
+      <nav className="flex items-center justify-between px-4 py-2 bg-[#09090b]/95 backdrop-blur-md border-b border-[#27272a] z-50">
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-3">
             <AppLogo
@@ -4101,19 +4284,19 @@ export default function OperatorDashboard() {
               <span className="font-black text-sm tracking-tighter text-slate-100 uppercase leading-none">
                 Church
               </span>
-              <span className="font-semibold text-[10px] tracking-[0.22em] text-sky-400 uppercase leading-none mt-1">
+              <span className="font-semibold text-[10px] tracking-[0.22em] text-[#cca000] uppercase leading-none mt-1">
                 Presenter
               </span>
             </div>
           </div>
-          <div className="flex space-x-4 text-[10px] font-bold text-slate-400 relative">
+          <div className="flex space-x-4 text-[10px] font-bold text-slate-300 relative">
             <div className="relative">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setActiveMenu(activeMenu === "file" ? null : "file");
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase ${activeMenu === "file" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase ${activeMenu === "file" ? "text-[#f5cc00]" : ""}`}
               >
                 FILE
               </button>
@@ -4123,7 +4306,7 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-48 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-1 z-[100]"
+                    className="absolute top-6 left-0 w-48 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 z-[100]"
                   >
                     <div
                       className="relative"
@@ -4135,11 +4318,11 @@ export default function OperatorDashboard() {
                           e.stopPropagation();
                           setShowNewSubmenu(!showNewSubmenu);
                         }}
-                        className={`w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between ${showNewSubmenu ? "bg-sky-500/15 text-sky-200" : ""}`}
+                        className={`w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between ${showNewSubmenu ? "bg-[#141417] text-[#f5cc00]" : ""}`}
                       >
                         New{" "}
                         <ChevronRight
-                          className={`w-3 h-3 opacity-50 transition-transform ${showNewSubmenu ? "rotate-90" : ""}`}
+                          className={`w-3 h-3 opacity-60 transition-transform ${showNewSubmenu ? "rotate-90" : ""}`}
                         />
                       </button>
                       <AnimatePresence>
@@ -4148,22 +4331,22 @@ export default function OperatorDashboard() {
                             initial={{ opacity: 0, x: 5 }}
                             animate={{ opacity: 1, x: 0 }}
                             exit={{ opacity: 0, x: 5 }}
-                            className="absolute left-[95%] -top-1 w-44 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-1 z-[110]"
+                            className="absolute left-[95%] -top-1 w-44 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 z-[110]"
                           >
                             <button
                               onClick={() => handleMenuAction("new-song")}
-                              className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wider"
+                              className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wider"
                             >
-                              Song <Music className="w-3 h-3 opacity-50" />
+                              Song <Music className="w-3 h-3 text-[#cca000]" />
                             </button>
                             <button
                               onClick={() =>
                                 handleMenuAction("new-presentation")
                               }
-                              className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wider"
+                              className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wider"
                             >
                               Presentation{" "}
-                              <FileText className="w-3 h-3 opacity-50" />
+                              <FileText className="w-3 h-3 text-[#cca000]" />
                             </button>
                           </motion.div>
                         )}
@@ -4171,25 +4354,25 @@ export default function OperatorDashboard() {
                     </div>
                     <button
                       onClick={() => handleMenuAction("open-project")}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
-                      Open Project <FolderOpen className="w-3 h-3 opacity-50" />
+                      Open Project <FolderOpen className="w-3 h-3 text-[#cca000]" />
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => handleMenuAction("save-project")}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
-                      Save Project <Save className="w-3 h-3 opacity-50" />
+                      Save Project <Save className="w-3 h-3 text-[#cca000]" />
                     </button>
                     <button
                       onClick={() => {
                         setShowPresentationModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
-                      Save Presentation <FileText className="w-3 h-3 opacity-50" />
+                      Save Presentation <FileText className="w-3 h-3 text-[#cca000]" />
                     </button>
                   </motion.div>
                 )}
@@ -4202,7 +4385,7 @@ export default function OperatorDashboard() {
                   e.stopPropagation();
                   setActiveMenu(activeMenu === "edit" ? null : "edit");
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase ${activeMenu === "edit" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase ${activeMenu === "edit" ? "text-[#f5cc00]" : ""}`}
               >
                 EDIT
               </button>
@@ -4212,17 +4395,17 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-48 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-1 z-[100]"
+                    className="absolute top-6 left-0 w-48 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 z-[100]"
                   >
                     <button
                       onClick={() => {
                         triggerUndo();
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
                       Undo Action{" "}
-                      <span className="text-[8px] bg-white/[0.06] text-slate-400 px-1.5 py-0.5 rounded border border-white/[0.06]">
+                      <span className="text-[8px] bg-[#000000] text-[#cca000] px-1.5 py-0.5 rounded border border-[#27272a]">
                         Ctrl+Z
                       </span>
                     </button>
@@ -4231,14 +4414,14 @@ export default function OperatorDashboard() {
                         triggerRedo();
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
                       Redo Action{" "}
-                      <span className="text-[8px] bg-white/[0.06] text-slate-400 px-1.5 py-0.5 rounded border border-white/[0.06]">
+                      <span className="text-[8px] bg-[#000000] text-[#cca000] px-1.5 py-0.5 rounded border border-[#27272a]">
                         Ctrl+Y
                       </span>
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => {
                         toggleMasterOverride("clear");
@@ -4248,7 +4431,7 @@ export default function OperatorDashboard() {
                         );
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors"
                     >
                       Clear Text Output
                     </button>
@@ -4263,7 +4446,7 @@ export default function OperatorDashboard() {
                   e.stopPropagation();
                   setActiveMenu(activeMenu === "media" ? null : "media");
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase ${activeMenu === "media" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase ${activeMenu === "media" ? "text-[#f5cc00]" : ""}`}
               >
                 MEDIA
               </button>
@@ -4273,17 +4456,17 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-48 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-1 z-[100]"
+                    className="absolute top-6 left-0 w-48 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 z-[100]"
                   >
                     <button
                       onClick={() => {
                         setShowMediaLibraryModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
                       Change Background{" "}
-                      <ImageIcon className="w-3 h-3 opacity-50" />
+                      <ImageIcon className="w-3 h-3 text-[#cca000]" />
                     </button>
                     <button
                       onClick={() => {
@@ -4294,40 +4477,40 @@ export default function OperatorDashboard() {
                           "info",
                         );
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
-                      Add Video Loop <Video className="w-3 h-3 opacity-50" />
+                      Add Video Loop <Video className="w-3 h-3 text-[#cca000]" />
                     </button>
                     <button
                       onClick={() => {
                         setShowMediaLibraryModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
                       Media Library{" "}
-                      <FolderOpen className="w-3 h-3 opacity-50" />
+                      <FolderOpen className="w-3 h-3 text-[#cca000]" />
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => {
                         setShowBibleDbModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-xs"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between text-xs"
                     >
                       Database Alkitab{" "}
-                      <Book className="w-3.5 h-3.5 text-sky-400/80" />
+                      <Book className="w-3.5 h-3.5 text-[#cca000]" />
                     </button>
                     <button
                       onClick={() => {
                         setShowSongDbModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-xs"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between text-xs"
                     >
                       Database Lagu{" "}
-                      <ListMusic className="w-3.5 h-3.5 text-sky-400/80" />
+                      <ListMusic className="w-3.5 h-3.5 text-[#cca000]" />
                     </button>
                   </motion.div>
                 )}
@@ -4340,7 +4523,7 @@ export default function OperatorDashboard() {
                   e.stopPropagation();
                   setActiveMenu(activeMenu === "view" ? null : "view");
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase ${activeMenu === "view" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase ${activeMenu === "view" ? "text-[#f5cc00]" : ""}`}
               >
                 View
               </button>
@@ -4350,38 +4533,38 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-48 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-1 z-[100]"
+                    className="absolute top-6 left-0 w-48 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 z-[100]"
                   >
                     <button
                       onClick={() => {
                         openProjectorExtendWindow(currentAccountId);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-sky-300 font-bold"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] transition-colors flex items-center justify-between text-[#f5cc00] font-bold"
                     >
                       Buka Ekstend (Monitor 2){" "}
-                      <Monitor className="w-3.5 h-3.5 opacity-85" />
+                      <Monitor className="w-3.5 h-3.5 text-[#f5cc00]" />
                     </button>
                     <button
                       onClick={() => {
                         toggleFullscreen();
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between"
                     >
                       Toggle Fullscreen{" "}
-                      <Sliders className="w-3.5 h-3.5 opacity-55" />
+                      <Sliders className="w-3.5 h-3.5 text-[#cca000]" />
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => {
                         setShowAudioMonitorsModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-2 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center justify-between text-slate-200 font-bold"
+                      className="w-full text-left px-4 py-2 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center justify-between text-slate-200 font-bold"
                     >
                       Audio Monitors & Pad{" "}
-                      <Mic2 className="w-3.5 h-3.5 text-sky-400 opacity-75" />
+                      <Mic2 className="w-3.5 h-3.5 text-[#cca000]" />
                     </button>
                   </motion.div>
                 )}
@@ -4397,7 +4580,7 @@ export default function OperatorDashboard() {
                     activeMenu === "settings_menu" ? null : "settings_menu",
                   );
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase flex items-center gap-1 ${activeMenu === "settings_menu" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase flex items-center gap-1 ${activeMenu === "settings_menu" ? "text-[#f5cc00]" : ""}`}
               >
                 Setting
               </button>
@@ -4407,33 +4590,33 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-48 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-2 z-[100]"
+                    className="absolute top-6 left-0 w-48 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-2 z-[100]"
                   >
                     <button
                       onClick={() => {
                         setShowSettingsModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center gap-2 text-xs"
+                      className="w-full text-left px-4 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center gap-2 text-xs"
                     >
-                      <Sliders className="w-3.5 h-3.5 opacity-70" /> Atur Kecepatan Slide
+                      <Sliders className="w-3.5 h-3.5 text-[#cca000]" /> Atur Kecepatan Slide
                     </button>
                     <button
                       onClick={() => {
                         setShowSettingsModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center gap-2 text-xs"
+                      className="w-full text-left px-4 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center gap-2 text-xs"
                     >
-                      <Monitor className="w-3.5 h-3.5 opacity-70" /> Atur Output Tampilan
+                      <Monitor className="w-3.5 h-3.5 text-[#cca000]" /> Atur Output Tampilan
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => {
                         setShowSettingsModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center gap-2 text-xs text-sky-400 font-bold"
+                      className="w-full text-left px-4 py-1.5 hover:bg-[#141417] transition-colors flex items-center gap-2 text-xs text-[#f5cc00] font-bold"
                     >
                       <Settings className="w-3.5 h-3.5" />{" "}
                       Pengaturan Sistem...
@@ -4451,12 +4634,12 @@ export default function OperatorDashboard() {
                   setShowShiftModal(true);
                   setActiveMenu(null);
                 }}
-                className={`hover:text-slate-100 transition-all uppercase flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-white/[0.05] ${currentShift?.active ? "text-emerald-300 font-black" : "text-slate-400"}`}
+                className={`hover:text-[#f5cc00] transition-all uppercase flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[#141417]/60 ${currentShift?.active ? "text-emerald-300 font-black" : "text-slate-300"}`}
                 title="Atur Shift & Jadwal Penutupan Mobile Share"
               >
                 <span className="relative flex h-1.5 w-1.5">
                   <span
-                    className={`relative inline-flex rounded-full h-1.5 w-1.5 ${currentShift?.active ? "bg-emerald-400" : "bg-slate-600"}`}
+                    className={`relative inline-flex rounded-full h-1.5 w-1.5 ${currentShift?.active ? "bg-emerald-400" : "bg-slate-500"}`}
                   ></span>
                 </span>
                 <span>Shift</span>
@@ -4464,7 +4647,7 @@ export default function OperatorDashboard() {
             </div>
 
             {/* AKUN Menu */}
-            <div className="relative border-l border-white/[0.08] pl-4 ml-2">
+            <div className="relative border-l border-[#27272a] pl-4 ml-2">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -4472,9 +4655,9 @@ export default function OperatorDashboard() {
                     activeMenu === "akun_menu" ? null : "akun_menu",
                   );
                 }}
-                className={`hover:text-slate-100 transition-colors uppercase flex items-center gap-1.5 ${activeMenu === "akun_menu" ? "text-sky-300" : ""}`}
+                className={`hover:text-[#f5cc00] transition-colors uppercase flex items-center gap-1.5 ${activeMenu === "akun_menu" ? "text-[#f5cc00]" : ""}`}
               >
-                <User className="w-3.5 h-3.5 text-sky-400" /> AKUN
+                <User className="w-3.5 h-3.5 text-[#cca000]" /> AKUN
               </button>
               <AnimatePresence>
                 {activeMenu === "akun_menu" && (
@@ -4482,13 +4665,13 @@ export default function OperatorDashboard() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-6 left-0 w-52 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.75)] py-2 z-[100]"
+                    className="absolute top-6 left-0 w-52 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-lg shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-2 z-[100]"
                   >
-                    <div className="px-4 py-2 border-b border-white/[0.07] mb-1.5">
-                      <div className="text-[10px] text-slate-200 uppercase tracking-wider font-extrabold truncate max-w-[170px]">
+                    <div className="px-4 py-2 border-b border-[#27272a] mb-1.5">
+                      <div className="text-[10px] text-slate-100 uppercase tracking-wider font-extrabold truncate max-w-[170px]">
                         {username}
                       </div>
-                      <div className="text-[8px] text-sky-400 uppercase font-black tracking-widest mt-0.5">
+                      <div className="text-[8px] text-[#cca000] uppercase font-black tracking-widest mt-0.5">
                         {userRole}
                       </div>
                     </div>
@@ -4497,9 +4680,9 @@ export default function OperatorDashboard() {
                         setShowAccountModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center gap-2 text-xs font-bold"
+                      className="w-full text-left px-4 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center gap-2 text-xs font-bold"
                     >
-                      <User className="w-3.5 h-3.5 opacity-70" /> Profil
+                      <User className="w-3.5 h-3.5 text-[#cca000]" /> Profil
                       Operator
                     </button>
                     <button
@@ -4507,12 +4690,12 @@ export default function OperatorDashboard() {
                         setShowAccountModal(true);
                         setActiveMenu(null);
                       }}
-                      className="w-full text-left px-4 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 transition-colors flex items-center gap-2 text-xs font-bold"
+                      className="w-full text-left px-4 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] transition-colors flex items-center gap-2 text-xs font-bold"
                     >
-                      <KeyRound className="w-3.5 h-3.5 opacity-70" /> Atur PIN
+                      <KeyRound className="w-3.5 h-3.5 text-[#cca000]" /> Atur PIN
                       Akses
                     </button>
-                    <div className="h-px bg-white/[0.07] my-1" />
+                    <div className="h-px bg-[#141417] my-1" />
                     <button
                       onClick={() => {
                         setActiveMenu(null);
@@ -4542,40 +4725,40 @@ export default function OperatorDashboard() {
               navigate("/");
             }}
             title="Klik untuk berpindah atau mengelola Akun Gereja"
-            className="flex items-center gap-2 px-2.5 py-1 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.08] hover:border-sky-400/35 rounded-lg group transition-all text-left"
+            className="flex items-center gap-2 px-2.5 py-1 bg-[#000000]/80 hover:bg-[#141417]/80 border border-[#27272a] hover:border-[#cca000]/60 rounded-lg group transition-all text-left"
           >
-            <div className="w-5 h-5 rounded-full bg-sky-500/15 border border-sky-400/40 flex items-center justify-center text-[10px] font-black text-sky-300 uppercase tracking-tight">
+            <div className="w-5 h-5 rounded-full bg-[#141417] border border-[#cca000]/60 flex items-center justify-center text-[10px] font-black text-[#f5cc00] uppercase tracking-tight">
               {currentAccount.name ? currentAccount.name.charAt(0) : "G"}
             </div>
             <div className="hidden md:flex flex-col">
-              <span className="text-[9px] font-black text-slate-200 group-hover:text-white transition-colors leading-none tracking-tight truncate max-w-[140px]">
+              <span className="text-[9px] font-black text-slate-100 group-hover:text-white transition-colors leading-none tracking-tight truncate max-w-[140px]">
                 {currentAccount.name}
               </span>
-              <span className="text-[7.5px] text-sky-400/80 font-mono leading-none mt-0.5">
+              <span className="text-[7.5px] text-[#cca000] font-mono leading-none mt-0.5">
                 @{currentAccount.username}
               </span>
             </div>
           </button>
 
-          <div className="w-[1px] h-4 bg-white/[0.08]"></div>
+          <div className="w-[1px] h-4 bg-[#141417]"></div>
 
           <div className="flex items-center space-x-1.5">
             <div
-              className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-400" : "bg-slate-500"}`}
+              className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-400" : "bg-[#cca000]/60"}`}
             ></div>
             <span
-              className={`text-[10px] uppercase font-bold tracking-wider ${isLive ? "text-emerald-300" : "text-slate-400"}`}
+              className={`text-[10px] uppercase font-bold tracking-wider ${isLive ? "text-emerald-300" : "text-slate-300"}`}
             >
               {isLive ? "Live Output Active" : "Standby / Sync Paused"}
             </span>
           </div>
-          <div className="w-[1px] h-4 bg-white/[0.08]"></div>
+          <div className="w-[1px] h-4 bg-[#141417]"></div>
           <button
             onClick={toggleLive}
-            className={`${isLive ? "bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/40 text-emerald-200" : "bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.1] text-slate-200"} px-4 py-1.5 rounded-lg text-[10px] font-black active:scale-95 transition-all uppercase tracking-widest flex items-center gap-2 cursor-pointer`}
+            className={`${isLive ? "bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/40 text-emerald-200" : "bg-[#141417] hover:bg-[#141417]/80 border border-[#cca000]/50 text-[#f5cc00]"} px-4 py-1.5 rounded-lg text-[10px] font-black active:scale-95 transition-all uppercase tracking-widest flex items-center gap-2 cursor-pointer`}
           >
             <div
-              className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-400" : "bg-slate-500"}`}
+              className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-400" : "bg-[#f5cc00]"}`}
             ></div>
             {isLive ? "Live" : "Standby"}
           </button>
@@ -4585,40 +4768,40 @@ export default function OperatorDashboard() {
       {/* Main Workspace */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar: Library */}
-        <aside className="w-64 bg-[#0B0D11] border-r border-white/[0.08] flex flex-col">
-          <div className="flex border-b border-white/[0.08]">
+        <aside className="w-64 bg-[#09090b] border-r border-[#27272a] flex flex-col">
+          <div className="flex border-b border-[#27272a]">
             <button
               onClick={() => setActiveTab("schedule")}
-              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "schedule" ? "text-sky-300 bg-sky-500/[0.07] border-sky-400" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "schedule" ? "text-[#f5cc00] bg-[#141417]/70 border-[#f5cc00]" : "text-slate-400 border-transparent hover:text-slate-200"}`}
             >
               Schedule
             </button>
             <button
               onClick={() => setActiveTab("library")}
-              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "library" ? "text-sky-300 bg-sky-500/[0.07] border-sky-400" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "library" ? "text-[#f5cc00] bg-[#141417]/70 border-[#f5cc00]" : "text-slate-400 border-transparent hover:text-slate-200"}`}
             >
               Song
             </button>
             <button
               onClick={() => setActiveTab("bible")}
-              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "bible" ? "text-sky-300 bg-sky-500/[0.07] border-sky-400" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "bible" ? "text-[#f5cc00] bg-[#141417]/70 border-[#f5cc00]" : "text-slate-400 border-transparent hover:text-slate-200"}`}
             >
               Bible
             </button>
             <button
               onClick={() => setActiveTab("presentations")}
-              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "presentations" ? "text-sky-300 bg-sky-500/[0.07] border-sky-400" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === "presentations" ? "text-[#f5cc00] bg-[#141417]/70 border-[#f5cc00]" : "text-slate-400 border-transparent hover:text-slate-200"}`}
             >
               Present
             </button>
           </div>
 
           {activeTab === "schedule" && (
-            <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#080A0E]/60">
-              <div className="text-[9px] font-black text-slate-500 uppercase px-4 py-3 tracking-widest flex justify-between items-center select-none border-b border-white/[0.06]">
+            <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#000000]/45">
+              <div className="text-[9px] font-black text-slate-400 uppercase px-4 py-3 tracking-widest flex justify-between items-center select-none border-b border-[#27272a]">
                 <span>
                   Service Plan{" "}
-                  <span className="text-sky-400 ml-1 tabular-nums">
+                  <span className="text-[#cca000] ml-1 tabular-nums">
                     ({schedule.length} Items)
                   </span>
                 </span>
@@ -4626,7 +4809,7 @@ export default function OperatorDashboard() {
                   <button
                     type="button"
                     onClick={selectAllSchedule}
-                    className="text-sky-400 hover:text-sky-300 transition-colors uppercase font-black text-[8px] hover:underline"
+                    className="text-[#cca000] hover:text-[#f5cc00] transition-colors uppercase font-black text-[8px] hover:underline"
                     title="Pilih semua item jadwal (Ctrl+A)"
                   >
                     Pilih Semua
@@ -4636,8 +4819,8 @@ export default function OperatorDashboard() {
 
               <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
                 {schedule.length === 0 && (
-                  <div className="py-10 text-center opacity-25 flex flex-col items-center">
-                    <Layers className="w-8 h-8 mb-2" />
+                  <div className="py-10 text-center opacity-35 flex flex-col items-center">
+                    <Layers className="w-8 h-8 mb-2 text-[#cca000]" />
                     <p className="text-[9px] uppercase font-bold">
                       No items in schedule
                     </p>
@@ -4657,7 +4840,7 @@ export default function OperatorDashboard() {
                               : [...prev, item.id],
                           );
                         } else {
-                          setSelectedSong(item as any);
+                          setSelectedSong(ensureSongTitleAndVerseSlides(item) as any);
                         }
                       }}
                       onContextMenu={(e) =>
@@ -4665,10 +4848,10 @@ export default function OperatorDashboard() {
                       }
                       className={`w-full group flex items-center px-3 py-3 rounded-lg text-[11px] cursor-pointer transition-all border ${
                         isMultiSelected
-                          ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-md shadow-black/40"
+                          ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00]/70 shadow-md shadow-black/40"
                           : selectedSong?.id === item.id
-                            ? "bg-sky-500/12 text-sky-300 border-sky-400/30"
-                            : "border-transparent hover:bg-white/[0.04] text-slate-400"
+                            ? "bg-[#141417]/85 text-[#f5cc00] border-[#cca000]/60"
+                            : "border-transparent hover:bg-[#141417]/40 text-slate-300"
                       }`}
                     >
                       <div
@@ -4689,10 +4872,10 @@ export default function OperatorDashboard() {
                             type="checkbox"
                             checked={isMultiSelected}
                             onChange={() => {}}
-                            className="w-3.5 h-3.5 rounded border-white/20 bg-[#080A0E] text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                            className="w-3.5 h-3.5 rounded border-[#cca000]/60 bg-[#000000] accent-[#f5cc00] focus:ring-0 focus:ring-offset-0 cursor-pointer"
                           />
                         ) : (
-                          <span className="text-slate-600 group-hover:text-sky-400 font-mono text-[9px] tabular-nums">
+                          <span className="text-slate-500 group-hover:text-[#f5cc00] font-mono text-[9px] tabular-nums">
                             {idx + 1}
                           </span>
                         )}
@@ -4701,7 +4884,7 @@ export default function OperatorDashboard() {
                         <div className="truncate font-bold tracking-tight">
                           {item.title}
                         </div>
-                        <div className="text-[9px] opacity-45 uppercase tracking-tighter truncate">
+                        <div className="text-[9px] opacity-55 uppercase tracking-tighter truncate">
                           {item.artist}
                         </div>
                       </div>
@@ -4711,7 +4894,7 @@ export default function OperatorDashboard() {
                             e.stopPropagation();
                             setEditingItem(item);
                           }}
-                          className="p-1 hover:text-slate-100"
+                          className="p-1 hover:text-[#f5cc00]"
                         >
                           <Edit2 className="w-3 h-3" />
                         </button>
@@ -4728,8 +4911,8 @@ export default function OperatorDashboard() {
               </div>
 
               {selectedScheduleIds.length > 0 && (
-                <div className="bg-[#0C0E12] border-t border-white/[0.08] p-2 flex items-center justify-between gap-2 shadow-2xl shrink-0 z-10 animate-fade-in">
-                  <span className="text-[10px] font-black uppercase text-sky-300 pl-1 tabular-nums">
+                <div className="bg-[#09090b] border-t border-[#27272a] p-2 flex items-center justify-between gap-2 shadow-2xl shrink-0 z-10 animate-fade-in">
+                  <span className="text-[10px] font-black uppercase text-[#f5cc00] pl-1 tabular-nums">
                     {selectedScheduleIds.length} Terpilih
                   </span>
                   <div className="flex gap-1.5">
@@ -4761,7 +4944,7 @@ export default function OperatorDashboard() {
                     <button
                       type="button"
                       onClick={() => setSelectedScheduleIds([])}
-                      className="px-2 py-1 bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-slate-300 font-bold text-[9px] rounded-md uppercase transition-all"
+                      className="px-2 py-1 bg-[#000000] hover:bg-[#141417] border border-[#27272a] text-slate-200 font-bold text-[9px] rounded-md uppercase transition-all"
                     >
                       Batal
                     </button>
@@ -4776,11 +4959,11 @@ export default function OperatorDashboard() {
               <div className="p-3">
                 <div className="relative flex gap-2">
                   <div className="relative flex-1">
-                    <Search className="absolute left-2.5 top-1.5 w-3 h-3 text-slate-500" />
+                    <Search className="absolute left-2.5 top-1.5 w-3 h-3 text-[#cca000]" />
                     <input
                       type="text"
                       placeholder="Cari Lagu / Song Search..."
-                      className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-8 py-1 text-[11px] focus:outline-none focus:border-sky-400/50 text-slate-100 placeholder-slate-600 transition-all"
+                      className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-8 py-1 text-[11px] focus:outline-none focus:border-[#f5cc00] text-slate-100 placeholder-slate-500 transition-all"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -4788,12 +4971,12 @@ export default function OperatorDashboard() {
                   <button
                     onClick={handleAISearch}
                     disabled={isSearchingAI || !search}
-                    className="bg-sky-600/90 hover:bg-sky-500 disabled:opacity-30 p-1 rounded-lg transition-colors text-white"
+                    className="bg-[#f5cc00] hover:bg-[#ffd60a] disabled:opacity-30 p-1 rounded-lg transition-colors text-[#000000]"
                   >
                     {isSearchingAI ? (
-                      <div className="w-4 h-4 border border-white/50 border-t-white rounded-full animate-spin" />
+                      <div className="w-4 h-4 border border-[#000000]/40 border-t-[#000000] rounded-full animate-spin" />
                     ) : (
-                      <Play className="w-4 h-4 fill-white" />
+                      <Play className="w-4 h-4 fill-[#000000]" />
                     )}
                   </button>
                 </div>
@@ -4806,8 +4989,8 @@ export default function OperatorDashboard() {
                   onClick={() => setSongSourceTab("local")}
                   className={`flex-1 py-1.5 px-2 rounded-lg text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
                     songSourceTab === "local"
-                      ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
-                      : "bg-[#080A0E] text-slate-400 border-white/[0.07] hover:text-slate-200"
+                      ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                      : "bg-[#000000] text-slate-400 border-[#27272a] hover:text-slate-200"
                   }`}
                 >
                   Lagu Saya
@@ -4817,8 +5000,8 @@ export default function OperatorDashboard() {
                   onClick={() => setSongSourceTab("be")}
                   className={`flex-1 py-1.5 px-2 rounded-lg text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
                     songSourceTab === "be"
-                      ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
-                      : "bg-[#080A0E] text-slate-400 border-white/[0.07] hover:text-slate-200"
+                      ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                      : "bg-[#000000] text-slate-400 border-[#27272a] hover:text-slate-200"
                   }`}
                   title={HKBP_SOURCE_URLS.bukuEnde}
                 >
@@ -4829,8 +5012,8 @@ export default function OperatorDashboard() {
                   onClick={() => setSongSourceTab("bn")}
                   className={`flex-1 py-1.5 px-2 rounded-lg text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
                     songSourceTab === "bn"
-                      ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
-                      : "bg-[#080A0E] text-slate-400 border-white/[0.07] hover:text-slate-200"
+                      ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                      : "bg-[#000000] text-slate-400 border-[#27272a] hover:text-slate-200"
                   }`}
                   title={HKBP_SOURCE_URLS.bukuNyanyian}
                 >
@@ -4840,24 +5023,24 @@ export default function OperatorDashboard() {
 
               {/* EW7 Library Management Header Button */}
               {songSourceTab === "local" ? (
-                <div className="px-3 pb-2 border-b border-white/[0.06] flex items-center justify-between gap-1 select-none">
+                <div className="px-3 pb-2 border-b border-[#27272a] flex items-center justify-between gap-1 select-none">
                   <div className="flex items-center gap-1.5 truncate">
-                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest truncate">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest truncate">
                       Lagu
                     </span>
                     {filteredSongs.length > 0 && (
                       <button
                         type="button"
                         onClick={selectAllLibrary}
-                        className="text-sky-400 hover:text-sky-300 text-[8px] font-black uppercase tracking-wider hover:underline"
+                        className="text-[#cca000] hover:text-[#f5cc00] text-[8px] font-black uppercase tracking-wider hover:underline"
                         title="Pilih semua lagu pencarian (Ctrl+A)"
                       >
                         Pilih Semua
                       </button>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 bg-[#080A0E] border border-white/[0.07] p-0.5 rounded-md text-[8px] select-none text-slate-500 font-black uppercase tracking-wider shrink-0">
-                    <span className="text-[7px] text-slate-600 px-1 font-bold">
+                  <div className="flex items-center gap-1 bg-[#000000] border border-[#27272a] p-0.5 rounded-md text-[8px] select-none text-slate-400 font-black uppercase tracking-wider shrink-0">
+                    <span className="text-[7px] text-slate-500 px-1 font-bold">
                       sort:
                     </span>
                     <button
@@ -4866,7 +5049,7 @@ export default function OperatorDashboard() {
                         setSongSortMode("default");
                         localStorage.setItem("cp_song_sort_mode", "default");
                       }}
-                      className={`px-1 rounded transition-all select-none ${songSortMode === "default" ? "bg-white/[0.08] text-sky-300 font-extrabold" : "hover:text-slate-300"}`}
+                      className={`px-1 rounded transition-all select-none ${songSortMode === "default" ? "bg-[#141417] text-[#f5cc00] font-extrabold" : "hover:text-slate-200"}`}
                       title="Urutan Bawaan"
                     >
                       Bawaan
@@ -4877,7 +5060,7 @@ export default function OperatorDashboard() {
                         setSongSortMode("alphabetical");
                         localStorage.setItem("cp_song_sort_mode", "alphabetical");
                       }}
-                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "alphabetical" ? "bg-white/[0.08] text-sky-300 font-extrabold" : "hover:text-slate-300"}`}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "alphabetical" ? "bg-[#141417] text-[#f5cc00] font-extrabold" : "hover:text-slate-200"}`}
                       title="Urutkan Berdasarkan Abjad (A-Z)"
                     >
                       <CaseSensitive className="w-2.5 h-2.5" /> Abjad
@@ -4888,7 +5071,7 @@ export default function OperatorDashboard() {
                         setSongSortMode("number");
                         localStorage.setItem("cp_song_sort_mode", "number");
                       }}
-                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "number" ? "bg-white/[0.08] text-sky-300 font-extrabold" : "hover:text-slate-300"}`}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "number" ? "bg-[#141417] text-[#f5cc00] font-extrabold" : "hover:text-slate-200"}`}
                       title="Urutkan Berdasarkan Angka/Nomor Buku Lagu"
                     >
                       <Hash className="w-2.5 h-2.5" /> Nomor
@@ -4899,7 +5082,7 @@ export default function OperatorDashboard() {
                         setSongSortMode("edited");
                         localStorage.setItem("cp_song_sort_mode", "edited");
                       }}
-                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "edited" ? "bg-white/[0.08] text-sky-300 font-extrabold" : "hover:text-slate-300"}`}
+                      className={`px-1 rounded transition-all flex items-center gap-0.5 select-none ${songSortMode === "edited" ? "bg-[#141417] text-[#f5cc00] font-extrabold" : "hover:text-slate-200"}`}
                       title="Urutkan Berdasarkan Waktu Terakhir Diedit"
                     >
                       <Clock className="w-2.5 h-2.5" /> Edit
@@ -4907,13 +5090,13 @@ export default function OperatorDashboard() {
                   </div>
                 </div>
               ) : (
-                <div className="px-3 pb-2 border-b border-white/[0.06] flex items-center justify-between gap-2 select-none">
-                  <span className="text-[9px] font-black text-sky-300 uppercase tracking-wider truncate tabular-nums">
+                <div className="px-3 pb-2 border-b border-[#27272a] flex items-center justify-between gap-2 select-none">
+                  <span className="text-[9px] font-black text-[#f5cc00] uppercase tracking-wider truncate tabular-nums">
                     {songSourceTab === "be"
                       ? `Buku Ende (${filteredHkbpSongs.length})`
                       : `Buku Nyanyian HKBP (${filteredHkbpSongs.length})`}
                   </span>
-                  <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tight">
+                  <span className="text-[8px] font-bold text-[#cca000] uppercase tracking-tight">
                     hkbp.or.id
                   </span>
                 </div>
@@ -4923,8 +5106,8 @@ export default function OperatorDashboard() {
                 <div className="flex-1 overflow-y-auto px-2 space-y-1 custom-scrollbar py-2">
                   {songSourceTab !== "local" ? (
                     isLoadingHkbpCatalog ? (
-                      <div className="py-10 flex flex-col items-center justify-center text-slate-500 gap-2">
-                        <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
+                      <div className="py-10 flex flex-col items-center justify-center text-slate-400 gap-2">
+                        <Loader2 className="w-5 h-5 animate-spin text-[#f5cc00]" />
                         <span className="text-[9px] font-black uppercase tracking-widest">
                           Memuat {songSourceTab === "be" ? "Buku Ende" : "Buku Nyanyian"} HKBP...
                         </span>
@@ -4937,13 +5120,13 @@ export default function OperatorDashboard() {
                         <button
                           type="button"
                           onClick={() => loadHkbpCatalog(songSourceTab)}
-                          className="px-3 py-1 bg-sky-600/90 hover:bg-sky-500 text-white text-[9px] font-black rounded-md uppercase"
+                          className="px-3 py-1 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] text-[9px] font-black rounded-md uppercase"
                         >
                           Muat Ulang
                         </button>
                       </div>
                     ) : filteredHkbpSongs.length === 0 ? (
-                      <div className="py-8 text-center text-slate-600 text-[10px] uppercase font-bold">
+                      <div className="py-8 text-center text-slate-500 text-[10px] uppercase font-bold">
                         Lagu tidak ditemukan
                       </div>
                     ) : (
@@ -4958,18 +5141,18 @@ export default function OperatorDashboard() {
                             onClick={() => handleSelectHkbpSong(item, "preview")}
                             className={`w-full group flex items-center px-2 py-2 rounded-lg text-[11px] cursor-pointer transition-all border ${
                               isSelected
-                                ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
-                                : "border-transparent hover:bg-white/[0.04] text-slate-400"
+                                ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                                : "border-transparent hover:bg-[#141417]/45 text-slate-300"
                             }`}
                           >
-                            <span className="mr-2 text-[9px] font-black px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-400/20 shrink-0 min-w-[38px] text-center tabular-nums">
+                            <span className="mr-2 text-[9px] font-black px-1.5 py-0.5 rounded bg-[#000000] text-[#cca000] border border-[#27272a] shrink-0 min-w-[38px] text-center tabular-nums">
                               {item.songbook.toUpperCase()} {item.nomorLagu}
                             </span>
                             <div className="flex-1 truncate">
                               <div className="truncate font-bold tracking-tight">
                                 {item.judul}
                               </div>
-                              <div className="text-[8px] font-medium opacity-45 uppercase tracking-wider truncate">
+                              <div className="text-[8px] font-medium opacity-55 uppercase tracking-wider truncate">
                                 {item.songbook === "be" ? "Buku Ende HKBP" : "Buku Nyanyian HKBP"}
                                 {item.tonalitas ? ` • ${item.tonalitas}` : ""}
                                 {item.nomorBukuLagu ? ` • BE ${item.nomorBukuLagu}` : ""}
@@ -4977,7 +5160,7 @@ export default function OperatorDashboard() {
                             </div>
                             <div className="flex items-center ml-1 space-x-1 shrink-0">
                               {isItemLoading ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#f5cc00]" />
                               ) : (
                                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity space-x-1">
                                   <button
@@ -4986,7 +5169,7 @@ export default function OperatorDashboard() {
                                       e.stopPropagation();
                                       handleSelectHkbpSong(item, "schedule");
                                     }}
-                                    className="p-1 hover:text-white bg-sky-500/15 rounded"
+                                    className="p-1 hover:text-[#f5cc00] bg-[#141417] border border-[#cca000]/30 rounded"
                                     title="Tambahkan ke Jadwal Ibadah"
                                   >
                                     <Plus className="w-3 h-3" />
@@ -4997,7 +5180,7 @@ export default function OperatorDashboard() {
                                       e.stopPropagation();
                                       handleSelectHkbpSong(item, "edit");
                                     }}
-                                    className="p-1 hover:text-white bg-white/[0.06] rounded"
+                                    className="p-1 hover:text-[#f5cc00] bg-[#000000] rounded"
                                     title="Edit Lagu"
                                   >
                                     <Edit2 className="w-3 h-3" />
@@ -5010,7 +5193,7 @@ export default function OperatorDashboard() {
                       })
                     )
                   ) : filteredSongs.length === 0 ? (
-                    <div className="py-8 text-center text-slate-600 text-[10px] uppercase font-bold">
+                    <div className="py-8 text-center text-slate-500 text-[10px] uppercase font-bold">
                       No items found
                     </div>
                   ) : (
@@ -5025,10 +5208,10 @@ export default function OperatorDashboard() {
                           key={song.id}
                           className={`w-full group flex items-center px-2 py-2 rounded-lg text-[11px] cursor-pointer transition-all border ${
                             isMultiSelected
-                              ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-md shadow-black/40"
+                              ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00]/70 shadow-md shadow-black/40"
                               : selectedSong?.id === song.id
-                                ? "bg-sky-500/15 text-sky-300 border-sky-400/35"
-                                : "border-transparent hover:bg-white/[0.04] text-slate-400"
+                                ? "bg-[#141417]/85 text-[#f5cc00] border-[#cca000]/60"
+                                : "border-transparent hover:bg-[#141417]/45 text-slate-300"
                           }`}
                           onClick={() => {
                             if (hasMultiSelection) {
@@ -5038,7 +5221,7 @@ export default function OperatorDashboard() {
                                   : [...prev, song.id],
                               );
                             } else {
-                              setSelectedSong(song);
+                              setSelectedSong(ensureSongTitleAndVerseSlides(song));
                             }
                           }}
                           onContextMenu={(e) =>
@@ -5063,10 +5246,10 @@ export default function OperatorDashboard() {
                                 type="checkbox"
                                 checked={isMultiSelected}
                                 onChange={() => {}}
-                                className="w-3.5 h-3.5 rounded border-white/20 bg-[#080A0E] text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                className="w-3.5 h-3.5 rounded border-[#cca000]/60 bg-[#000000] accent-[#f5cc00] focus:ring-0 focus:ring-offset-0 cursor-pointer"
                               />
                             ) : (
-                              <span className="text-[10px] opacity-40 group-hover:text-sky-400 font-bold">
+                              <span className="text-[10px] opacity-55 group-hover:text-[#f5cc00] font-bold">
                                 🎵
                               </span>
                             )}
@@ -5076,7 +5259,7 @@ export default function OperatorDashboard() {
                             <div className="truncate font-bold tracking-tight">
                               {song.title}
                             </div>
-                            <div className="text-[8px] font-medium opacity-45 uppercase tracking-wider">
+                            <div className="text-[8px] font-medium opacity-55 uppercase tracking-wider">
                               {song.artist || "Artis"}
                             </div>
                           </div>
@@ -5088,7 +5271,7 @@ export default function OperatorDashboard() {
                                 e.stopPropagation();
                                 addToSchedule(song);
                               }}
-                              className="p-1 hover:text-white bg-sky-500/15 rounded"
+                              className="p-1 hover:text-[#f5cc00] bg-[#141417] border border-[#cca000]/30 rounded"
                               title="Tambahkan ke Jadwal Ibadah"
                             >
                               <Plus className="w-3 h-3" />
@@ -5102,7 +5285,7 @@ export default function OperatorDashboard() {
                                   type: "song",
                                 } as any);
                               }}
-                              className="p-1 hover:text-white bg-white/[0.06] rounded"
+                              className="p-1 hover:text-[#f5cc00] bg-[#000000] rounded"
                               title="Edit Konten & Desain Lagu Permanen"
                             >
                               <Edit2 className="w-3 h-3" />
@@ -5130,8 +5313,8 @@ export default function OperatorDashboard() {
                 </div>
 
                 {selectedLibrarySongIds.length > 0 && (
-                  <div className="bg-[#0C0E12] border-t border-white/[0.08] p-2 flex items-center justify-between gap-1 shadow-2xl shrink-0 z-10 animate-fade-in">
-                    <span className="text-[9px] font-black uppercase text-sky-300 pl-1 tabular-nums">
+                  <div className="bg-[#09090b] border-t border-[#27272a] p-2 flex items-center justify-between gap-1 shadow-2xl shrink-0 z-10 animate-fade-in">
+                    <span className="text-[9px] font-black uppercase text-[#f5cc00] pl-1 tabular-nums">
                       {selectedLibrarySongIds.length} Terpilih
                     </span>
                     <div className="flex gap-1">
@@ -5166,7 +5349,7 @@ export default function OperatorDashboard() {
                           );
                           setActiveTab("schedule");
                         }}
-                        className="px-2 py-1 bg-sky-600/90 hover:bg-sky-500 text-white font-black text-[8px] rounded-md uppercase flex items-center gap-0.5 transition-all"
+                        className="px-2 py-1 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] font-black text-[8px] rounded-md uppercase flex items-center gap-0.5 transition-all"
                       >
                         <Plus className="w-2.5 h-2.5" /> Jadwal
                       </button>
@@ -5185,7 +5368,7 @@ export default function OperatorDashboard() {
                       <button
                         type="button"
                         onClick={() => setSelectedLibrarySongIds([])}
-                        className="px-1.5 py-1 bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-slate-300 font-bold text-[8px] rounded-md uppercase transition-all"
+                        className="px-1.5 py-1 bg-[#000000] hover:bg-[#141417] border border-[#27272a] text-slate-200 font-bold text-[8px] rounded-md uppercase transition-all"
                       >
                         Batal
                       </button>
@@ -5195,15 +5378,15 @@ export default function OperatorDashboard() {
               </div>
             </>
           ) : activeTab === "presentations" ? (
-            <div className="flex flex-col h-full overflow-hidden bg-[#080A0E]/40">
-              <div className="p-3 border-b border-white/[0.07]">
+            <div className="flex flex-col h-full overflow-hidden bg-[#000000]/40">
+              <div className="p-3 border-b border-[#27272a]">
                 <div className="relative flex gap-2">
                   <div className="relative flex-1">
-                    <Search className="absolute left-2.5 top-1.5 w-3 h-3 text-slate-500" />
+                    <Search className="absolute left-2.5 top-1.5 w-3 h-3 text-[#cca000]" />
                     <input
                       type="text"
                       placeholder="Cari Presentasi..."
-                      className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-8 py-1 text-[11px] focus:outline-none focus:border-sky-400/50 text-slate-100 placeholder-slate-600 transition-all"
+                      className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-8 py-1 text-[11px] focus:outline-none focus:border-[#f5cc00] text-slate-100 placeholder-slate-500 transition-all"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -5211,10 +5394,10 @@ export default function OperatorDashboard() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#0B0D11]/50 relative pb-12">
+              <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#09090b]/40 relative pb-12">
                 <div className="p-2 space-y-1">
                   {filteredPresentations.length === 0 ? (
-                    <div className="text-center text-slate-500 py-8 text-[9px] font-bold uppercase tracking-wider">
+                    <div className="text-center text-slate-400 py-8 text-[9px] font-bold uppercase tracking-wider">
                       {search ? "Tidak ditemukan" : "Belum ada presentasi tersimpan"}
                     </div>
                   ) : (
@@ -5230,16 +5413,16 @@ export default function OperatorDashboard() {
                             onDoubleClick={() => addToSchedule(pres)}
                             className={`flex-1 text-left px-2.5 py-2 rounded-lg text-[10px] transition-all flex items-start gap-2 select-none group border ${
                               isSelected
-                                ? "bg-sky-500/15 border-sky-400/35 text-sky-200 font-bold"
-                                : "hover:bg-white/[0.04] text-slate-400 border-transparent hover:border-white/[0.07]"
+                                ? "bg-[#141417] border-[#cca000]/65 text-[#f5cc00] font-bold"
+                                : "hover:bg-[#141417]/45 text-slate-300 border-transparent hover:border-[#27272a]"
                             }`}
                           >
                             <FileText
-                              className={`w-3.5 h-3.5 mt-0.5 opacity-60 ${isSelected ? "text-sky-400" : ""}`}
+                              className={`w-3.5 h-3.5 mt-0.5 ${isSelected ? "text-[#f5cc00]" : "text-[#cca000]/75"}`}
                             />
                             <div className="overflow-hidden">
                               <div className="truncate">{pres.title}</div>
-                              <div className="text-[8.5px] font-normal opacity-50 truncate mt-0.5 tabular-nums">
+                              <div className="text-[8.5px] font-normal opacity-55 truncate mt-0.5 tabular-nums">
                                 {pres.verses.length} Slide
                               </div>
                             </div>
@@ -5263,7 +5446,7 @@ export default function OperatorDashboard() {
                                   e.stopPropagation();
                                   addToSchedule(pres);
                                 }}
-                                className="px-3 bg-sky-600/90 hover:bg-sky-500 rounded-md text-white font-black text-[9px] uppercase tracking-widest shadow-lg flex items-center gap-1 transition-all"
+                                className="px-3 bg-[#f5cc00] hover:bg-[#ffd60a] rounded-md text-[#000000] font-black text-[9px] uppercase tracking-widest shadow-lg flex items-center gap-1 transition-all"
                               >
                                 <Plus className="w-3 h-3" /> Jadwal
                               </button>
@@ -5277,15 +5460,15 @@ export default function OperatorDashboard() {
               </div>
             </div>
           ) : activeTab === "bible" ? (
-            <div className="flex flex-col h-full overflow-hidden bg-[#080A0E]/40">
-              <div className="p-3 border-b border-white/[0.07]">
+            <div className="flex flex-col h-full overflow-hidden bg-[#000000]/40">
+              <div className="p-3 border-b border-[#27272a]">
                 <div className="flex justify-between items-center mb-3">
-                  <div className="flex bg-[#080A0E] p-0.5 rounded-lg border border-white/[0.08] flex-wrap gap-1 max-w-[210px]">
+                  <div className="flex bg-[#000000] p-0.5 rounded-lg border border-[#27272a] flex-wrap gap-1 max-w-[210px]">
                     {/* Bahasa Indonesia (HKBP Online) */}
                     <button
                       type="button"
                       onClick={() => setBibleVersion("tb")}
-                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "tb" ? "bg-sky-500/20 text-sky-200 border border-sky-400/35 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"}`}
+                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "tb" ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/60 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-[#141417]/40"}`}
                       title={`Alkitab Bahasa Indonesia TB (${HKBP_SOURCE_URLS.alkitab})`}
                     >
                       Indonesia
@@ -5295,7 +5478,7 @@ export default function OperatorDashboard() {
                     <button
                       type="button"
                       onClick={() => setBibleVersion("toba")}
-                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "toba" ? "bg-sky-500/20 text-sky-200 border border-sky-400/35 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"}`}
+                      className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all cursor-pointer ${bibleVersion === "toba" ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/60 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-[#141417]/40"}`}
                       title={`Bibel Bahasa Batak Toba (${HKBP_SOURCE_URLS.alkitab})`}
                     >
                       Batak Toba
@@ -5313,7 +5496,7 @@ export default function OperatorDashboard() {
                           key={cb.id}
                           type="button"
                           onClick={() => setBibleVersion(cb.id)}
-                          className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${bibleVersion === cb.id ? "bg-sky-500/20 text-sky-200 border border-sky-400/35 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"}`}
+                          className={`px-2 py-1 text-[8px] font-black uppercase tracking-tighter rounded-md transition-all ${bibleVersion === cb.id ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/60 font-extrabold" : "text-slate-400 hover:text-slate-200 hover:bg-[#141417]/40"}`}
                           title={cb.name}
                         >
                           {cb.name
@@ -5326,13 +5509,13 @@ export default function OperatorDashboard() {
                   <button
                     onClick={addBibleToSchedule}
                     disabled={!selectedSong?.id.startsWith("bible-")}
-                    className={`flex items-center gap-1 text-[9px] bg-sky-600/90 hover:bg-sky-500 text-white px-2 py-1 rounded-md font-black disabled:opacity-30 transition-all`}
+                    className={`flex items-center gap-1 text-[9px] bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] px-2 py-1 rounded-md font-black disabled:opacity-30 transition-all`}
                   >
                     <Plus className="w-2.5 h-2.5" /> ADD TO PLAN
                   </button>
                 </div>
                 <select
-                  className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-slate-100 focus:outline-none focus:border-sky-400/50 cursor-pointer"
+                  className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2 py-1.5 text-[11px] text-slate-100 focus:outline-none focus:border-[#f5cc00] cursor-pointer"
                   value={selectedBibleBook}
                   onChange={(e) => setSelectedBibleBook(e.target.value)}
                 >
@@ -5344,13 +5527,13 @@ export default function OperatorDashboard() {
                 </select>
                 <div className="grid grid-cols-3 gap-1.5 mt-2">
                   <div>
-                    <span className="text-[7.5px] font-black text-slate-500 uppercase mb-0.5 block tracking-wider">
+                    <span className="text-[7.5px] font-black text-slate-400 uppercase mb-0.5 block tracking-wider">
                       Pasal
                     </span>
                     <input
                       type="text"
                       inputMode="numeric"
-                      className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-sky-400/50 outline-none text-center font-bold tabular-nums"
+                      className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-[#f5cc00] outline-none text-center font-bold tabular-nums"
                       value={chapterInput}
                       onChange={(e) =>
                         setChapterInput(
@@ -5361,13 +5544,13 @@ export default function OperatorDashboard() {
                     />
                   </div>
                   <div>
-                    <span className="text-[7.5px] font-black text-slate-500 uppercase mb-0.5 block tracking-wider">
+                    <span className="text-[7.5px] font-black text-slate-400 uppercase mb-0.5 block tracking-wider">
                       Dari Ayat
                     </span>
                     <input
                       type="text"
                       inputMode="numeric"
-                      className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-sky-400/50 outline-none text-center font-bold tabular-nums"
+                      className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-[#f5cc00] outline-none text-center font-bold tabular-nums"
                       value={startVerseInput}
                       onChange={(e) =>
                         setStartVerseInput(
@@ -5378,13 +5561,13 @@ export default function OperatorDashboard() {
                     />
                   </div>
                   <div>
-                    <span className="text-[7.5px] font-black text-slate-500 uppercase mb-0.5 block tracking-wider">
+                    <span className="text-[7.5px] font-black text-slate-400 uppercase mb-0.5 block tracking-wider">
                       Sampai
                     </span>
                     <input
                       type="text"
                       inputMode="numeric"
-                      className="w-full bg-[#080A0E] border border-white/[0.08] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-sky-400/50 outline-none text-center font-bold tabular-nums"
+                      className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2 py-1 text-[11px] text-slate-100 focus:border-[#f5cc00] outline-none text-center font-bold tabular-nums"
                       value={endVerseInput}
                       onChange={(e) =>
                         setEndVerseInput(
@@ -5398,9 +5581,9 @@ export default function OperatorDashboard() {
               </div>
               <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
                 {isFetchingBible ? (
-                  <div className="flex flex-col items-center justify-center h-40 opacity-50">
-                    <Loader2 className="w-5 h-5 animate-spin mb-2 text-sky-400" />
-                    <span className="text-[8px] uppercase font-black tracking-widest text-slate-500">
+                  <div className="flex flex-col items-center justify-center h-40 opacity-65">
+                    <Loader2 className="w-5 h-5 animate-spin mb-2 text-[#f5cc00]" />
+                    <span className="text-[8px] uppercase font-black tracking-widest text-slate-400">
                       Memuat Ayat...
                     </span>
                   </div>
@@ -5416,7 +5599,7 @@ export default function OperatorDashboard() {
                           selectedBibleChapter,
                         )
                       }
-                      className="px-3 py-1 bg-sky-600/90 hover:bg-sky-500 text-white text-[9px] font-black rounded-md uppercase transition-colors"
+                      className="px-3 py-1 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] text-[9px] font-black rounded-md uppercase transition-colors"
                     >
                       Coba Lagi
                     </button>
@@ -5424,10 +5607,10 @@ export default function OperatorDashboard() {
                 ) : (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">
+                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
                         Daftar Ayat &amp; Perikop
                       </span>
-                      <span className="text-[8px] font-bold text-sky-400/80 uppercase">
+                      <span className="text-[8px] font-bold text-[#cca000] uppercase">
                         {bibleVersion === "toba" ? "Batak Toba" : bibleVersion === "tb" ? "TB Indonesia" : ""}
                       </span>
                     </div>
@@ -5450,11 +5633,11 @@ export default function OperatorDashboard() {
                         return (
                           <div key={idx} className="space-y-1">
                             {pericopesAtVerse && pericopesAtVerse.length > 0 && (
-                              <div className="mt-2.5 first:mt-0 px-2.5 py-1.5 rounded-lg bg-amber-500/[0.07] border border-amber-400/20 text-left select-none">
-                                <span className="inline-block text-[7px] font-black uppercase tracking-widest text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded mr-1.5 align-middle">
+                              <div className="mt-2.5 first:mt-0 px-2.5 py-1.5 rounded-lg bg-[#cca000]/15 border border-[#cca000]/45 text-left select-none">
+                                <span className="inline-block text-[7px] font-black uppercase tracking-widest text-[#000000] bg-[#f5cc00] px-1.5 py-0.5 rounded mr-1.5 align-middle">
                                   Judul Perikop
                                 </span>
-                                <span className="text-[10.5px] font-extrabold text-amber-100/90 leading-snug align-middle">
+                                <span className="text-[10.5px] font-extrabold text-[#f5cc00] leading-snug align-middle">
                                   {pericopesAtVerse.join(" • ")}
                                 </span>
                               </div>
@@ -5468,15 +5651,15 @@ export default function OperatorDashboard() {
                                   idx,
                                 )
                               }
-                              className={`w-full text-left p-2 rounded-lg text-[11px] group transition-colors border leading-relaxed ${isCurrentlyActive ? "border-sky-400/50 bg-sky-500/15" : isInRange ? "bg-sky-500/[0.08] border-sky-400/25" : "hover:bg-white/[0.04] border-transparent"}`}
+                              className={`w-full text-left p-2 rounded-lg text-[11px] group transition-colors border leading-relaxed ${isCurrentlyActive ? "border-[#f5cc00] bg-[#141417]" : isInRange ? "bg-[#141417]/65 border-[#cca000]/50" : "hover:bg-[#141417]/35 border-transparent"}`}
                             >
                               <span
-                                className={`text-[9px] font-black mr-2 tabular-nums ${isCurrentlyActive ? "text-sky-200" : isInRange ? "text-sky-400" : "text-slate-600"}`}
+                                className={`text-[9px] font-black mr-2 tabular-nums ${isCurrentlyActive ? "text-[#f5cc00]" : isInRange ? "text-[#cca000]" : "text-slate-500"}`}
                               >
                                 {vNum}
                               </span>
                               <span
-                                className={`${isCurrentlyActive || isInRange ? "text-slate-100" : "text-slate-400 group-hover:text-slate-300"} transition-all`}
+                                className={`${isCurrentlyActive || isInRange ? "text-slate-100" : "text-slate-300 group-hover:text-slate-100"} transition-all`}
                               >
                                 {verse}
                               </span>
@@ -5493,7 +5676,7 @@ export default function OperatorDashboard() {
 
         {/* Center Content: Slide Grid */}
         <main
-          className="p-4 flex flex-col h-full overflow-hidden bg-[#07080B]"
+          className="p-4 flex flex-col h-full overflow-hidden bg-[#000000]"
           style={{
             width: "680px",
             paddingLeft: "16px",
@@ -5509,7 +5692,7 @@ export default function OperatorDashboard() {
               <h2 className="text-xl font-black text-slate-100 leading-tight tracking-tight">
                 {selectedSong?.title || "Choose a Song"}
               </h2>
-              <p className="text-[10px] text-slate-500 italic uppercase tracking-wider font-bold mt-1">
+              <p className="text-[10px] text-[#cca000] italic uppercase tracking-wider font-bold mt-1">
                 {selectedSong?.artist || "Library Selection Required"}
               </p>
             </div>
@@ -5518,8 +5701,11 @@ export default function OperatorDashboard() {
                 onClick={() => {
                   if (selectedSong) {
                     const item = schedule.find(
-                      (s) => s.songId === selectedSong.id,
+                      (s) =>
+                        s.id === selectedSong.id ||
+                        s.songId === selectedSong.id,
                     ) || {
+                      ...selectedSong,
                       id: selectedSong.id,
                       title: selectedSong.title,
                       artist: selectedSong.artist || "Unknown",
@@ -5527,21 +5713,25 @@ export default function OperatorDashboard() {
                         ? "bible"
                         : "song",
                       verses: [...selectedSong.verses],
-                      verseLabels: selectedSong.verseLabels ? [...selectedSong.verseLabels] : undefined,
-                      pericopes: selectedSong.pericopes ? { ...selectedSong.pericopes } : undefined,
+                      verseLabels: selectedSong.verseLabels
+                        ? [...selectedSong.verseLabels]
+                        : undefined,
+                      pericopes: selectedSong.pericopes
+                        ? { ...selectedSong.pericopes }
+                        : undefined,
                     };
                     setEditingItem(item as ScheduleItem);
                   } else {
                     alert("Select a song/item first to edit.");
                   }
                 }}
-                className="px-3 py-1 bg-[#0E1117] border border-white/[0.08] rounded-lg text-[9px] font-bold text-slate-300 hover:text-white hover:border-white/20 transition-all uppercase tracking-tighter flex items-center gap-1"
+                className="px-3 py-1 bg-[#09090b] border border-[#27272a] rounded-lg text-[9px] font-bold text-slate-200 hover:text-[#f5cc00] hover:border-[#cca000]/60 transition-all uppercase tracking-tighter flex items-center gap-1"
               >
-                <Edit2 className="w-2.5 h-2.5" /> Edit Builder
+                <Edit2 className="w-2.5 h-2.5 text-[#cca000]" /> Edit Builder
               </button>
               <button
                 onClick={() => alert("Chord chart toggled")}
-                className="px-3 py-1 bg-[#0E1117] border border-white/[0.08] rounded-lg text-[9px] font-bold text-slate-300 hover:text-white hover:border-white/20 transition-all uppercase tracking-tighter"
+                className="px-3 py-1 bg-[#09090b] border border-[#27272a] rounded-lg text-[9px] font-bold text-slate-200 hover:text-[#f5cc00] hover:border-[#cca000]/60 transition-all uppercase tracking-tighter"
               >
                 Chords
               </button>
@@ -5549,12 +5739,12 @@ export default function OperatorDashboard() {
                 onClick={() => setIsAutoPlay(!isAutoPlay)}
                 className={`px-3 py-1 border rounded-lg text-[9px] font-bold transition-all uppercase tracking-tighter flex items-center gap-1 ${
                   isAutoPlay
-                    ? "bg-sky-500/20 text-sky-200 border-sky-400/40"
-                    : "bg-[#0E1117] border-white/[0.08] text-slate-300 hover:text-white hover:border-white/20"
+                    ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                    : "bg-[#09090b] border-[#27272a] text-slate-200 hover:text-[#f5cc00] hover:border-[#cca000]/60"
                 }`}
               >
                 <Play
-                  className="w-2.5 h-2.5"
+                  className="w-2.5 h-2.5 text-[#cca000]"
                 />
                 {isAutoPlay ? `Playing (${slideSpeed}s)` : "Auto Play"}
               </button>
@@ -5592,6 +5782,7 @@ export default function OperatorDashboard() {
                     : isBible
                       ? `Ayat ${idx + 1}`
                       : `Verse ${idx + 1}`;
+                const isTitleSlide = /^(?:judul|judul lagu|title|intro)$/i.test(rawLabel);
                 const isReffSlide = /^(reff|chorus|refrain)/i.test(rawLabel);
 
                 return (
@@ -5608,16 +5799,16 @@ export default function OperatorDashboard() {
                     onContextMenu={(e) =>
                       handleContextMenu(e, "slide_item", { verse, idx })
                     }
-                    className={`aspect-video rounded-xl border flex flex-col p-3 text-center cursor-pointer shadow-lg transition-all relative group bg-[#0E1117] overflow-hidden ${isActive ? "bg-[#111722] border-sky-400/75 ring-2 ring-sky-400/15" : isReffSlide ? "border-amber-400/25 hover:border-amber-300/45" : "border-white/[0.08] hover:border-white/25"}`}
+                    className={`aspect-video rounded-xl border flex flex-col p-3 text-center cursor-pointer shadow-lg transition-all relative group overflow-hidden ${isActive ? "bg-[#141417] border-[#f5cc00] ring-2 ring-[#f5cc00]/25" : isTitleSlide || isReffSlide ? "bg-[#09090b] border-[#cca000]/55 hover:border-[#f5cc00]" : "bg-[#09090b] border-[#27272a] hover:border-[#cca000]/65"}`}
                   >
                     {slidePericopes && slidePericopes.length > 0 && (
-                      <div className="w-full mb-1 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-400/25 text-[8px] font-black text-amber-200 uppercase tracking-tight truncate shrink-0">
+                      <div className="w-full mb-1 px-1.5 py-0.5 rounded bg-[#cca000]/15 border border-[#cca000]/45 text-[8px] font-black text-[#f5cc00] uppercase tracking-tight truncate shrink-0">
                         Perikop: {slidePericopes.join(" • ")}
                       </div>
                     )}
                     <div className="flex-1 flex items-center justify-center overflow-hidden w-full h-full">
                       <p
-                        className={`text-[11px] font-bold leading-relaxed line-clamp-4 ${isActive ? "text-slate-50" : "text-slate-300"}`}
+                        className={`${isTitleSlide ? "text-[11px] font-black tracking-wide" : "text-[10.5px] font-bold leading-snug"} whitespace-pre-line line-clamp-5 ${isActive ? "text-white" : isTitleSlide ? "text-[#f5cc00]" : "text-slate-200"}`}
                       >
                         {isBible ? `${bibleVerseNum}. ${verse}`.toUpperCase() : verse.toUpperCase()}
                       </p>
@@ -5627,32 +5818,32 @@ export default function OperatorDashboard() {
                         <span
                           className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-tighter shrink-0 ${
                             isActive
-                              ? "bg-sky-500/25 text-sky-200 border border-sky-400/35"
-                              : isReffSlide
-                                ? "bg-amber-500/10 text-amber-200/90 border border-amber-400/20"
-                                : "bg-white/[0.05] text-slate-400 border border-white/[0.06]"
+                              ? "bg-[#f5cc00] text-[#000000] border border-[#f5cc00]"
+                              : isTitleSlide || isReffSlide
+                                ? "bg-[#cca000]/15 text-[#f5cc00] border border-[#cca000]/45"
+                                : "bg-[#000000] text-[#cca000] border border-[#27272a]"
                           }`}
                         >
                           {rawLabel}
                         </span>
                       ) : (
                         <span
-                          className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-tighter shrink-0 ${isActive ? "bg-sky-500/15 text-sky-300 border border-sky-400/25" : "bg-white/[0.04] text-slate-500 border border-white/[0.06]"}`}
+                          className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-tighter shrink-0 ${isActive ? "bg-[#f5cc00] text-[#000000] border border-[#f5cc00]" : "bg-[#000000] text-slate-400 border border-[#27272a]"}`}
                         >
                           {isBible ? `Ayat ${bibleVerseNum} (Pecah)` : "Verse (Split)"}
                         </span>
                       )}
                       {isActive && (
-                        <div className="w-1.5 h-1.5 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.85)] shrink-0" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#f5cc00] shadow-[0_0_8px_rgba(245,204,0,0.85)] shrink-0" />
                       )}
                     </div>
                   </button>
                 );
               })}
               {!selectedSong && (
-                <div className="col-span-full py-20 flex flex-col items-center justify-center border border-dashed border-white/[0.09] rounded-xl bg-white/[0.02]">
-                  <Play className="w-8 h-8 text-white/10 mb-4" />
-                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">
+                <div className="col-span-full py-20 flex flex-col items-center justify-center border border-dashed border-[#27272a] rounded-xl bg-[#09090b]/40">
+                  <Play className="w-8 h-8 text-[#cca000]/35 mb-4" />
+                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">
                     Standby - Select sequence
                   </p>
                 </div>
@@ -5661,25 +5852,25 @@ export default function OperatorDashboard() {
           </div>
 
           {/* Fixed Footer: Background Themes Folders */}
-          <div className="p-4 bg-[#0B0D11] border border-white/[0.08] rounded-xl flex-shrink-0">
+          <div className="p-4 bg-[#09090b] border border-[#27272a] rounded-xl flex-shrink-0">
             <div className="flex justify-between items-center mb-3">
               <div className="flex gap-4">
                 <button
                   onClick={() => setBgTab("images")}
-                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "images" ? "text-sky-300 border-sky-400 font-extrabold" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "images" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
                 >
                   <FolderOpen className="w-3.5 h-3.5" /> Images Folder
                 </button>
                 <button
                   onClick={() => setBgTab("videos")}
-                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "videos" ? "text-sky-300 border-sky-400 font-extrabold" : "text-slate-500 border-transparent hover:text-slate-300"}`}
+                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "videos" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
                 >
                   <Video className="w-3.5 h-3.5" /> Videos Folder
                 </button>
               </div>
               <button
                 onClick={handleAddBackground}
-                className="text-[9px] font-bold text-sky-400 hover:text-sky-300 transition-all uppercase tracking-wider flex items-center gap-1"
+                className="text-[9px] font-bold text-[#cca000] hover:text-[#f5cc00] transition-all uppercase tracking-wider flex items-center gap-1"
               >
                 <Plus className="w-3 h-3" /> Add Background
               </button>
@@ -5699,7 +5890,7 @@ export default function OperatorDashboard() {
                   <button
                     key={idx}
                     onClick={() => handleBackgroundSelect(bg)}
-                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group ${activeBackground === bg ? "border-sky-400 scale-95 shadow-[0_0_12px_rgba(56,189,248,0.28)]" : "border-white/[0.08] opacity-60 hover:opacity-100"}`}
+                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group ${activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
                   >
                     <img
                       src={resolveMedia(bg)}
@@ -5717,7 +5908,7 @@ export default function OperatorDashboard() {
                   <button
                     key={idx}
                     onClick={() => handleBackgroundSelect(bg)}
-                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group bg-black/40 ${activeBackground === bg ? "border-sky-400 scale-95 shadow-[0_0_12px_rgba(56,189,248,0.28)]" : "border-white/[0.08] opacity-65 hover:opacity-100"}`}
+                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group bg-black/40 ${activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
                   >
                     <video
                       src={resolveMedia(bg)}
@@ -5728,7 +5919,7 @@ export default function OperatorDashboard() {
                       className="w-full h-full object-cover pointer-events-none"
                     />
                     <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <div className="absolute bottom-1 right-1 bg-black/70 px-1 py-0.5 rounded text-[7px] font-bold text-slate-300">
+                    <div className="absolute bottom-1 right-1 bg-black/70 px-1 py-0.5 rounded text-[7px] font-bold text-[#f5cc00]">
                       VIDEO
                     </div>
                   </button>
@@ -5739,21 +5930,21 @@ export default function OperatorDashboard() {
         </main>
 
         {/* Right Sidebar: Output Monitors */}
-        <aside className="w-72 bg-[#0B0D11] border-l border-white/[0.08] flex flex-col p-4 space-y-6 overflow-y-auto custom-scrollbar">
+        <aside className="w-72 bg-[#09090b] border-l border-[#27272a] flex flex-col p-4 space-y-6 overflow-y-auto custom-scrollbar">
           <div>
             <div className="flex justify-between items-center mb-2">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+              <span className="text-[10px] font-black text-[#cca000] uppercase tracking-widest">
                 {isLive ? "Live Output" : "Preview (Sync Off)"}
               </span>
               <span
-                className={`text-[10px] font-black tracking-wider ${isLive ? "text-emerald-400" : "text-slate-500"}`}
+                className={`text-[10px] font-black tracking-wider ${isLive ? "text-emerald-400" : "text-slate-400"}`}
               >
                 {isLive ? "ON AIR" : "OFFLINE"}
               </span>
             </div>
             <div
               onContextMenu={(e) => handleContextMenu(e, "live_preview", null)}
-              className={`slide-canvas-preserve ${outputResolution === "4:3" ? "aspect-[4/3]" : "aspect-video"} ${lowerThirdMode ? (chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent border border-white/10") : "bg-black"} rounded-lg border border-white/[0.09] flex items-center justify-center p-4 relative group cursor-pointer overflow-hidden shadow-2xl @container`}
+              className={`slide-canvas-preserve ${outputResolution === "4:3" ? "aspect-[4/3]" : "aspect-video"} ${lowerThirdMode ? (chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent border border-white/10") : "bg-black"} rounded-lg border border-[#27272a] flex items-center justify-center p-4 relative group cursor-pointer overflow-hidden shadow-2xl @container`}
               style={{ containerType: "inline-size" }}
             >
               {masterOverride === "logo" ||
@@ -6185,8 +6376,64 @@ export default function OperatorDashboard() {
 
                     const textClass = isLight ? "text-zinc-900" : "text-white";
 
+                    const slideAny = slide as Slide;
+                    const slideTransPreset = slideAny.slideTransition || "fade";
+                    const textAnimPreset = slideAny.textAnimation || "none";
+                    const animSpeedPreset = slideAny.animationSpeed || "normal";
+                    const monitorMotionProps = getSlideTransitionMotion(
+                      slideTransPreset,
+                      transitionDuration,
+                      animSpeedPreset,
+                    );
+                    const monitorAnimKey = `${slideAny.parentId || "sys"}-${slideAny.slideIdx ?? "0"}-${slide.content || ""}-${slide.type}-${slideTransPreset}-${textAnimPreset}-${animSpeedPreset}`;
+
+                    const renderMonitorLines = (
+                      rawText: string,
+                      wrapQuotes = false,
+                    ) => {
+                      const formatted = wrapQuotes ? `"${rawText}"` : rawText;
+                      if (!textAnimPreset || textAnimPreset === "none") {
+                        return formatted;
+                      }
+                      return formatted.split("\n").map((line, lIdx) => {
+                        const lm = getTextLineMotionVariant(
+                          textAnimPreset,
+                          lIdx,
+                          Math.max(0.6, transitionDuration),
+                          animSpeedPreset,
+                        );
+                        if (!lm) {
+                          return (
+                            <span key={lIdx} className="block">
+                              {line || "\u00A0"}
+                            </span>
+                          );
+                        }
+                        return (
+                          <motion.span
+                            key={`ml-${monitorAnimKey}-${lIdx}`}
+                            initial={lm.initial}
+                            animate={lm.animate}
+                            transition={lm.transition}
+                            style={{
+                              display: "block",
+                              transformOrigin: "center bottom",
+                            }}
+                          >
+                            {line || "\u00A0"}
+                          </motion.span>
+                        );
+                      });
+                    };
+
                     return (
-                      <>
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={monitorAnimKey}
+                          {...monitorMotionProps}
+                          style={{ perspective: 1000 }}
+                          className="absolute inset-0 w-full h-full pointer-events-none"
+                        >
                         {/* Shape Decorations Overlay */}
                         {slide.shapeDecoration === "bottom-bar" && (
                           <div className="absolute bottom-1.5 left-1.5 right-1.5 bg-black/80 backdrop-blur border border-zinc-700/30 rounded h-6 z-[5] pointer-events-none" />
@@ -6243,6 +6490,7 @@ export default function OperatorDashboard() {
                           )}
 
                         <div
+                          style={{ perspective: 1000 }}
                           className={`absolute inset-0 z-10 flex p-3 pointer-events-none ${posClass} ${textAlign === "left" ? "justify-start" : textAlign === "right" ? "justify-end" : "justify-center"}`}
                         >
                           <div className={`w-full flex flex-col ${alignClass}`}>
@@ -6283,9 +6531,9 @@ export default function OperatorDashboard() {
                                 )}
                                 <p
                                   style={customStyle}
-                                  className={`${textClass} ${fontClass} ${trackingClass} ${spacingClass} ${transformClass} ${weightClass} ${italicClass}`}
+                                  className={`${textClass} ${fontClass} ${trackingClass} ${spacingClass} ${transformClass} ${weightClass} ${italicClass} whitespace-pre-line`}
                                 >
-                                  "{slide.content}"
+                                  {renderMonitorLines(slide.content, true)}
                                 </p>
                                 {slide.title && (
                                   <p
@@ -6320,7 +6568,7 @@ export default function OperatorDashboard() {
                                   style={customStyle}
                                   className={`${textClass} whitespace-pre-line px-2 ${fontClass} ${trackingClass} ${spacingClass} ${transformClass} ${weightClass} ${italicClass}`}
                                 >
-                                  {slide.content}
+                                  {renderMonitorLines(slide.content)}
                                 </p>
                               </div>
                             ) : (
@@ -6340,44 +6588,45 @@ export default function OperatorDashboard() {
                                 )}
                                 <p
                                   style={customStyle}
-                                  className={`${textClass} ${fontClass} ${trackingClass} ${spacingClass} ${transformClass} ${weightClass} ${italicClass}`}
+                                  className={`${textClass} ${fontClass} ${trackingClass} ${spacingClass} ${transformClass} ${weightClass} ${italicClass} whitespace-pre-line`}
                                 >
-                                  {slide.content}
+                                  {renderMonitorLines(slide.content)}
                                 </p>
                               </div>
                             )}
                           </div>
                         </div>
-                      </>
+                        </motion.div>
+                      </AnimatePresence>
                     );
                   })()}
                 </>
               )}
-              <div className="absolute inset-0 bg-sky-500/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                <Monitor className="w-8 h-8 text-white/20" />
+              <div className="absolute inset-0 bg-[#141417]/15 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                <Monitor className="w-8 h-8 text-white/25" />
               </div>
             </div>
           </div>
 
           <div>
             <div className="flex justify-between items-center mb-2">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+              <span className="text-[10px] font-black text-[#cca000] uppercase tracking-widest">
                 Stage Display
               </span>
             </div>
-            <div className="aspect-video bg-[#080A0E] rounded-lg border border-white/[0.08] relative p-3 flex flex-col justify-between shadow-inner">
-              <div className="text-[9px] text-sky-300/90 font-mono font-bold uppercase tracking-tight line-clamp-1">
+            <div className="aspect-video bg-[#000000] rounded-lg border border-[#27272a] relative p-3 flex flex-col justify-between shadow-inner">
+              <div className="text-[9px] text-[#f5cc00] font-mono font-bold uppercase tracking-tight line-clamp-1">
                 Current: {currentSlide?.title || "None"}
               </div>
               <div className="flex-1 flex items-center justify-center py-2 overflow-hidden w-full">
                 <div className="w-full max-h-[68px] overflow-y-auto scrollbar-none flex items-center justify-center">
-                  <p className="text-[9px] text-slate-400 font-mono text-center italic whitespace-pre-line px-1 leading-normal">
+                  <p className="text-[9px] text-slate-300 font-mono text-center italic whitespace-pre-line px-1 leading-normal">
                     "{currentSlide?.content || "Waiting for signal..."}"
                   </p>
                 </div>
               </div>
               <div className="flex items-end justify-between">
-                <div className="text-[8px] text-sky-400/75 font-mono">
+                <div className="text-[8px] text-[#cca000] font-mono">
                   NEXT UP: CHORUS
                 </div>
                 <div className="text-xl font-mono text-slate-100 font-black tracking-tighter tabular-nums">
@@ -6390,8 +6639,8 @@ export default function OperatorDashboard() {
             </div>
           </div>
 
-          <div className="flex-1 bg-[#0E1117]/80 rounded-xl border border-white/[0.08] p-4 flex flex-col">
-            <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">
+          <div className="flex-1 bg-[#000000]/55 rounded-xl border border-[#27272a] p-4 flex flex-col">
+            <div className="text-[10px] font-black text-[#cca000] uppercase tracking-widest mb-4">
               Master Controls
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -6405,31 +6654,31 @@ export default function OperatorDashboard() {
                     type: "announcement",
                   });
                 }}
-                className="py-3 bg-rose-500/10 text-rose-300 border border-rose-500/25 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/20 transition-colors"
+                className="py-3 bg-rose-500/10 text-rose-300 border border-rose-500/30 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-rose-500/20 transition-colors"
               >
                 Clear All
               </button>
               <button
                 onClick={() => toggleMasterOverride("black")}
-                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "black" ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-[0_0_14px_rgba(56,189,248,0.18)]" : "bg-[#080A0E] text-slate-400 border-white/[0.08] hover:border-white/20 hover:text-slate-200"}`}
+                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "black" ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00] shadow-[0_0_14px_rgba(245,204,0,0.22)]" : "bg-[#000000] text-slate-300 border-[#27272a] hover:border-[#cca000]/65 hover:text-[#f5cc00]"}`}
               >
                 Black
               </button>
               <button
                 onClick={() => toggleMasterOverride("logo")}
-                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "logo" ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-[0_0_14px_rgba(56,189,248,0.18)]" : "bg-[#080A0E] text-slate-400 border-white/[0.08] hover:border-white/20 hover:text-slate-200"}`}
+                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "logo" ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00] shadow-[0_0_14px_rgba(245,204,0,0.22)]" : "bg-[#000000] text-slate-300 border-[#27272a] hover:border-[#cca000]/65 hover:text-[#f5cc00]"}`}
               >
                 Logo
               </button>
               <button
                 onClick={() => toggleMasterOverride("qr")}
-                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "qr" ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-[0_0_14px_rgba(56,189,248,0.18)]" : "bg-[#080A0E] text-slate-400 border-white/[0.08] hover:border-white/20 hover:text-slate-200"}`}
+                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "qr" ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00] shadow-[0_0_14px_rgba(245,204,0,0.22)]" : "bg-[#000000] text-slate-300 border-[#27272a] hover:border-[#cca000]/65 hover:text-[#f5cc00]"}`}
               >
                 QR Code
               </button>
               <button
                 onClick={() => toggleMasterOverride("clear")}
-                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "clear" ? "bg-sky-500/20 text-sky-200 border-sky-400/45 shadow-[0_0_14px_rgba(56,189,248,0.18)]" : "bg-[#080A0E] text-slate-400 border-white/[0.08] hover:border-white/20 hover:text-slate-200"}`}
+                className={`py-3 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${masterOverride === "clear" ? "bg-[#141417] text-[#f5cc00] border-[#f5cc00] shadow-[0_0_14px_rgba(245,204,0,0.22)]" : "bg-[#000000] text-slate-300 border-[#27272a] hover:border-[#cca000]/65 hover:text-[#f5cc00]"}`}
               >
                 Clear
               </button>
@@ -6438,9 +6687,9 @@ export default function OperatorDashboard() {
             <div className="mt-auto pt-4 flex flex-col gap-2 relative">
               <button
                 onClick={() => setShowProjectionDropdown((prev) => !prev)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-sky-600/90 hover:bg-sky-500 text-white border border-sky-400/30 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-sky-950/30 cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] border border-[#f5cc00] rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-[0_8px_24px_rgba(245,204,0,0.22)] cursor-pointer"
               >
-                <Monitor className="w-3.5 h-3.5 text-sky-100" />
+                <Monitor className="w-3.5 h-3.5 text-[#000000]" />
                 <span>Open Projection</span>
                 <ChevronDown className={`w-3 h-3 transition-transform ${showProjectionDropdown ? "rotate-180" : ""}`} />
               </button>
@@ -6451,17 +6700,17 @@ export default function OperatorDashboard() {
                     className="fixed inset-0 z-[90]"
                     onClick={() => setShowProjectionDropdown(false)}
                   />
-                  <div className="absolute left-0 right-0 bottom-full mb-2 bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-xl shadow-2xl p-1.5 z-[100] text-left">
+                  <div className="absolute left-0 right-0 bottom-full mb-2 bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-xl shadow-2xl p-1.5 z-[100] text-left">
                     <button
                       onClick={() => {
                         openProjectorExtendWindow(currentAccountId);
                         setShowProjectionDropdown(false);
                       }}
-                      className="w-full text-left px-3 py-2 hover:bg-sky-500/15 hover:border-sky-400/30 border border-transparent rounded-lg transition-all flex items-start gap-2.5 group cursor-pointer"
+                      className="w-full text-left px-3 py-2 hover:bg-[#141417] hover:border-[#cca000]/50 border border-transparent rounded-lg transition-all flex items-start gap-2.5 group cursor-pointer"
                     >
-                      <Monitor className="w-4 h-4 text-sky-400 mt-0.5 group-hover:scale-110 transition-transform shrink-0" />
+                      <Monitor className="w-4 h-4 text-[#f5cc00] mt-0.5 group-hover:scale-110 transition-transform shrink-0" />
                       <div>
-                        <div className="text-[11px] font-black text-slate-100 group-hover:text-sky-200 uppercase tracking-tight">
+                        <div className="text-[11px] font-black text-slate-100 group-hover:text-[#f5cc00] uppercase tracking-tight">
                           Mode Ekstend
                         </div>
                         <div className="text-[9px] text-slate-400 leading-snug">
@@ -6475,11 +6724,11 @@ export default function OperatorDashboard() {
                         window.open(`/projector?account=${currentAccountId}`, "_blank");
                         setShowProjectionDropdown(false);
                       }}
-                      className="w-full text-left px-3 py-2 hover:bg-sky-500/15 hover:border-sky-400/30 border border-transparent rounded-lg transition-all flex items-start gap-2.5 group cursor-pointer mt-1"
+                      className="w-full text-left px-3 py-2 hover:bg-[#141417] hover:border-[#cca000]/50 border border-transparent rounded-lg transition-all flex items-start gap-2.5 group cursor-pointer mt-1"
                     >
-                      <ExternalLink className="w-4 h-4 text-sky-300 mt-0.5 group-hover:scale-110 transition-transform shrink-0" />
+                      <ExternalLink className="w-4 h-4 text-[#cca000] mt-0.5 group-hover:scale-110 transition-transform shrink-0" />
                       <div>
-                        <div className="text-[11px] font-black text-slate-100 group-hover:text-sky-200 uppercase tracking-tight">
+                        <div className="text-[11px] font-black text-slate-100 group-hover:text-[#f5cc00] uppercase tracking-tight">
                           Buka di Tab Web
                         </div>
                         <div className="text-[9px] text-slate-400 leading-snug">
@@ -6492,9 +6741,9 @@ export default function OperatorDashboard() {
               )}
               <button
                 onClick={() => setShowShareModal(true)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] hover:border-white/20 text-slate-300 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#000000] border border-[#27272a] hover:bg-[#141417] hover:border-[#cca000]/65 text-slate-200 hover:text-[#f5cc00] rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
               >
-                <QrCode className="w-3 h-3 text-sky-400" /> Mobile Share
+                <QrCode className="w-3 h-3 text-[#cca000]" /> Mobile Share
               </button>
             </div>
           </div>
@@ -6503,20 +6752,20 @@ export default function OperatorDashboard() {
       {/* Editing Modal */}
       <AnimatePresence>
         {editingItem && (
-          <div className="fixed inset-0 z-[250] bg-[#07080B]/95 backdrop-blur-md flex flex-col text-slate-200 font-sans select-none">
+          <div className="fixed inset-0 z-[250] bg-[#000000]/95 backdrop-blur-md flex flex-col text-slate-200 font-sans select-none">
             <motion.div
               initial={{ opacity: 0, scale: 0.98 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.98 }}
               transition={{ duration: 0.15 }}
-              className="w-full h-full flex flex-col overflow-hidden bg-[#0C0E12] border border-white/[0.08] shadow-2xl relative"
+              className="w-full h-full flex flex-col overflow-hidden bg-[#09090b] border border-[#27272a] shadow-2xl relative"
             >
               {/* 1. EASYWORSHIP 7 TOPBAR / WINDOW HEADER */}
-              <div className="flex items-center justify-between px-3 py-2 bg-[#0B0D11] border-b border-white/[0.08] select-none">
+              <div className="flex items-center justify-between px-3 py-2 bg-[#09090b] border-b border-[#27272a] select-none">
                 {/* Left: Window Title Card and Input Box */}
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 bg-[#07080B] border border-white/[0.08] focus-within:border-sky-400/50 rounded-lg px-2.5 py-1 max-w-[320px] transition-colors">
-                    <span className="text-[10px] font-bold text-slate-500 font-mono tracking-tight uppercase">
+                  <div className="flex items-center gap-1.5 bg-[#000000] border border-[#27272a] focus-within:border-[#f5cc00] rounded-lg px-2.5 py-1 max-w-[320px] transition-colors">
+                    <span className="text-[10px] font-bold text-[#cca000] font-mono tracking-tight uppercase">
                       Judul:
                     </span>
                     <input
@@ -6529,14 +6778,14 @@ export default function OperatorDashboard() {
                         })
                       }
                       placeholder="A Mighty Fortress Is Our God"
-                      className="bg-transparent border-none text-slate-100 text-xs font-semibold focus:outline-none min-w-[200px] select-all placeholder-slate-600"
+                      className="bg-transparent border-none text-slate-100 text-xs font-semibold focus:outline-none min-w-[200px] select-all placeholder-slate-500"
                     />
                   </div>
                 </div>
 
                 {/* Center/Right: Core Quick Buttons from EW7 */}
                 <div className="flex items-center gap-1">
-                  <div className="h-6 w-[1px] bg-white/[0.08] mx-1"></div>
+                  <div className="h-6 w-[1px] bg-[#141417] mx-1"></div>
 
                   {/* Logo overlay button */}
                   <button
@@ -6548,10 +6797,10 @@ export default function OperatorDashboard() {
                           : "logo_overlay",
                       )
                     }
-                    className={`flex flex-col items-center justify-center px-4 py-1 rounded-lg hover:bg-white/[0.06] transition-all ${editorActiveMenu === "logo_overlay" ? "bg-sky-500/15 text-sky-200 border border-sky-400/35" : "text-slate-300 border border-transparent"}`}
+                    className={`flex flex-col items-center justify-center px-4 py-1 rounded-lg hover:bg-[#141417]/65 transition-all ${editorActiveMenu === "logo_overlay" ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65" : "text-slate-300 border border-transparent"}`}
                     title="Tambahkan logo pada slide presentasi (Atas Kanan atau Atas Kiri)"
                   >
-                    <Shield className={`w-3.5 h-3.5 ${editorActiveMenu === "logo_overlay" ? "text-sky-400" : "text-slate-400"}`} />
+                    <Shield className={`w-3.5 h-3.5 ${editorActiveMenu === "logo_overlay" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
                       Logo
                     </span>
@@ -6566,9 +6815,9 @@ export default function OperatorDashboard() {
                         textBold: editingItem.textBold === false ? true : false,
                       });
                     }}
-                    className="flex flex-col items-center justify-center px-4 py-1 rounded-lg hover:bg-white/[0.06] text-slate-300 transition-all border border-transparent"
+                    className="flex flex-col items-center justify-center px-4 py-1 rounded-lg hover:bg-[#141417]/65 text-slate-300 transition-all border border-transparent"
                   >
-                    <span className="text-sm font-black leading-none font-sans text-sky-400">
+                    <span className="text-sm font-black leading-none font-sans text-[#f5cc00]">
                       T
                     </span>
                     <span className="text-[9px] font-bold tracking-tight">
@@ -6591,14 +6840,14 @@ export default function OperatorDashboard() {
                         );
                       }
                     }}
-                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-white/[0.06] transition-all border ${
+                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-[#141417]/65 transition-all border ${
                       editorActiveMenu === "scripture"
-                        ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
                         : "text-slate-300 border-transparent"
                     }`}
                     title="Insert scripture verses dynamically as text slides"
                   >
-                    <BookOpen className={`w-3.5 h-3.5 ${editorActiveMenu === "scripture" ? "text-sky-400" : "text-slate-400"}`} />
+                    <BookOpen className={`w-3.5 h-3.5 ${editorActiveMenu === "scripture" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
                       Scripture
                     </span>
@@ -6612,14 +6861,14 @@ export default function OperatorDashboard() {
                         editorActiveMenu === "shape" ? null : "shape",
                       )
                     }
-                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-white/[0.06] transition-all border ${
+                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-[#141417]/65 transition-all border ${
                       editorActiveMenu === "shape"
-                        ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
                         : "text-slate-300 border-transparent"
                     }`}
                     title="Add layouts, frames, decorative brackets or overlay shapes"
                   >
-                    <Square className={`w-3.5 h-3.5 ${editorActiveMenu === "shape" ? "text-sky-400" : "text-slate-400"}`} />
+                    <Square className={`w-3.5 h-3.5 ${editorActiveMenu === "shape" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
                       Shape
                     </span>
@@ -6633,14 +6882,14 @@ export default function OperatorDashboard() {
                         editorActiveMenu === "gambar_bg" ? null : "gambar_bg",
                       );
                     }}
-                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-white/[0.06] transition-all border ${
+                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-[#141417]/65 transition-all border ${
                       editorActiveMenu === "gambar_bg"
-                        ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
                         : "text-slate-300 border-transparent"
                     }`}
                     title="Atur latar belakang gambar statis dan warna solid"
                   >
-                    <ImageIcon className={`w-3.5 h-3.5 ${editorActiveMenu === "gambar_bg" ? "text-sky-400" : "text-slate-400"}`} />
+                    <ImageIcon className={`w-3.5 h-3.5 ${editorActiveMenu === "gambar_bg" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
                       Gambar
                     </span>
@@ -6654,62 +6903,44 @@ export default function OperatorDashboard() {
                         editorActiveMenu === "video_bg" ? null : "video_bg",
                       );
                     }}
-                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-white/[0.06] transition-all border ${
+                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-[#141417]/65 transition-all border ${
                       editorActiveMenu === "video_bg"
-                        ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
                         : "text-slate-300 border-transparent"
                     }`}
                     title="Atur latar belakang video motion loop"
                   >
-                    <Video className={`w-3.5 h-3.5 ${editorActiveMenu === "video_bg" ? "text-sky-400" : "text-slate-400"}`} />
+                    <Video className={`w-3.5 h-3.5 ${editorActiveMenu === "video_bg" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
                       Video
                     </span>
                   </button>
 
-                  {/* Arrange Button */}
+                  {/* Animasi Button (Menggantikan Arrange & Inspector) */}
                   <button
                     type="button"
                     onClick={() =>
                       setEditorActiveMenu(
-                        editorActiveMenu === "arrange" ? null : "arrange",
+                        editorActiveMenu === "animation" ? null : "animation",
                       )
                     }
-                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-white/[0.06] transition-all border ${
-                      editorActiveMenu === "arrange"
-                        ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                    className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg hover:bg-[#141417]/65 transition-all border ${
+                      editorActiveMenu === "animation"
+                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
                         : "text-slate-300 border-transparent"
                     }`}
-                    title="Reorder, duplicate, add, delete, or clean presentation slides"
+                    title="Atur animasi masuk slide dan teks"
                   >
-                    <Sliders className={`w-3.5 h-3.5 ${editorActiveMenu === "arrange" ? "text-sky-400" : "text-slate-400"}`} />
+                    <Sparkles className={`w-3.5 h-3.5 ${editorActiveMenu === "animation" ? "text-[#f5cc00]" : "text-[#cca000]/80"}`} />
                     <span className="text-[9px] font-bold tracking-tight mt-0.5">
-                      Arrange
-                    </span>
-                  </button>
-
-                  {/* Inspector Button (EW7 Style Sidebar Display toggle) */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setEditorTab(
-                        editorTab === "styles" ? "content" : "styles",
-                      )
-                    }
-                    className={`flex flex-col items-center justify-center px-4 py-1 rounded-lg hover:bg-white/[0.06] transition-colors border ${editorTab === "styles" ? "bg-sky-500/15 text-sky-200 border-sky-400/35" : "text-slate-300 border-transparent"}`}
-                  >
-                    <div className="w-4 h-4 bg-sky-500/20 border border-sky-400/40 rounded-full flex items-center justify-center text-[10px] text-sky-300 font-bold font-mono">
-                      i
-                    </div>
-                    <span className="text-[9px] font-bold tracking-tight mt-0.5">
-                      Inspector
+                      Animasi
                     </span>
                   </button>
                 </div>
               </div>
 
               {/* 2. FORMATTING TOOLBAR (SECOND ROW) */}
-              <div className="flex items-center justify-between px-3 py-1.5 bg-[#0D1017] border-b border-white/[0.07] overflow-x-auto text-[11px] text-slate-200 select-none scrollbar-none">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-[#09090b] border-b border-[#27272a] overflow-x-auto text-[11px] text-slate-200 select-none scrollbar-none">
                 <div className="flex items-center gap-1.5 py-0.5">
                   {/* Font Dropdown (Combobox style) */}
                   <select
@@ -6720,7 +6951,7 @@ export default function OperatorDashboard() {
                         fontFamily: e.target.value,
                       })
                     }
-                    className="bg-[#12161F] border border-white/[0.09] text-[11px] font-semibold text-slate-100 rounded-md px-2 py-0.5 hover:bg-white/[0.07] focus:outline-none focus:border-sky-400/50 cursor-pointer w-32"
+                    className="bg-[#000000] border border-[#27272a] text-[11px] font-semibold text-slate-100 rounded-md px-2 py-0.5 hover:bg-[#141417]/60 focus:outline-none focus:border-[#f5cc00] cursor-pointer w-32"
                   >
                     <option value="Sans / Inter">Inter / Default</option>
                     <option value="Tahoma">Tahoma</option>
@@ -6732,7 +6963,7 @@ export default function OperatorDashboard() {
                   </select>
 
                   {/* Font Size Mode Selection */}
-                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-2 select-none">
+                  <label className="text-[9px] font-bold text-[#cca000] uppercase ml-2 select-none">
                     Size Mode:
                   </label>
                   <select
@@ -6743,14 +6974,14 @@ export default function OperatorDashboard() {
                         fontSizeMode: e.target.value as any,
                       })
                     }
-                    className="bg-[#12161F] border border-white/[0.09] text-[11px] font-semibold text-slate-100 rounded-md px-1.5 py-0.5 hover:bg-white/[0.07] focus:outline-none focus:border-sky-400/50 cursor-pointer"
+                    className="bg-[#000000] border border-[#27272a] text-[11px] font-semibold text-slate-100 rounded-md px-1.5 py-0.5 hover:bg-[#141417]/60 focus:outline-none focus:border-[#f5cc00] cursor-pointer"
                   >
                     <option value="auto">Auto</option>
                     <option value="manual">Manual</option>
                   </select>
 
                   {/* Size Value Incrementer Buttons */}
-                  <div className="flex items-center bg-[#12161F] rounded-md border border-white/[0.09] overflow-hidden ml-1">
+                  <div className="flex items-center bg-[#000000] rounded-md border border-[#27272a] overflow-hidden ml-1">
                     <button
                       type="button"
                       onClick={() => {
@@ -6761,12 +6992,12 @@ export default function OperatorDashboard() {
                           fontSize: Math.max(10, currentSize - 4),
                         });
                       }}
-                      className="px-2 py-0.5 text-slate-300 hover:bg-white/[0.08] active:bg-white/[0.12] text-[10px] font-bold transition-colors"
+                      className="px-2 py-0.5 text-slate-200 hover:bg-[#141417] active:bg-[#141417]/80 text-[10px] font-bold transition-colors"
                       title="Shrink text sizes"
                     >
                       A-
                     </button>
-                    <span className="px-2 text-[10px] font-mono text-sky-200 border-x border-white/[0.08] font-bold tabular-nums">
+                    <span className="px-2 text-[10px] font-mono text-[#f5cc00] border-x border-[#27272a] font-bold tabular-nums">
                       {editingItem.fontSizeMode === "auto"
                         ? "Auto"
                         : `${editingItem.fontSize || 60}`}
@@ -6781,19 +7012,19 @@ export default function OperatorDashboard() {
                           fontSize: Math.min(200, currentSize + 4),
                         });
                       }}
-                      className="px-2 py-0.5 text-slate-300 hover:bg-white/[0.08] active:bg-white/[0.12] text-[10px] font-bold transition-colors"
+                      className="px-2 py-0.5 text-slate-200 hover:bg-[#141417] active:bg-[#141417]/80 text-[10px] font-bold transition-colors"
                       title="Enlarge text sizes"
                     >
                       A+
                     </button>
                   </div>
 
-                  <div className="w-[1px] h-4 bg-white/[0.08] mx-1.5"></div>
+                  <div className="w-[1px] h-4 bg-[#141417] mx-1.5"></div>
 
                   {/* Color box picker (Visual Square Color Button) */}
                   <div className="flex items-center gap-1">
                     <div
-                      className="w-5 h-5 rounded border border-white/20 cursor-pointer hover:border-sky-400/60 shadow-sm flex items-center justify-center relative overflow-hidden"
+                      className="w-5 h-5 rounded border border-[#27272a] cursor-pointer hover:border-[#f5cc00] shadow-sm flex items-center justify-center relative overflow-hidden"
                       style={{
                         backgroundColor: editingItem.textColor || "#ffffff",
                       }}
@@ -6810,15 +7041,15 @@ export default function OperatorDashboard() {
                         className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
                       />
                     </div>
-                    <span className="text-[9px] font-mono font-bold tracking-tighter text-slate-400 uppercase select-all">
+                    <span className="text-[9px] font-mono font-bold tracking-tighter text-slate-300 uppercase select-all">
                       {editingItem.textColor || "#ffffff"}
                     </span>
                   </div>
 
-                  <div className="w-[1px] h-4 bg-white/[0.08] mx-1.5"></div>
+                  <div className="w-[1px] h-4 bg-[#141417] mx-1.5"></div>
 
                   {/* Character Styles Trigger Toggles (B, I, U, S, O Buttons) */}
-                  <div className="flex items-center bg-[#080A0E] rounded-md p-0.5 border border-white/[0.08]">
+                  <div className="flex items-center bg-[#000000] rounded-md p-0.5 border border-[#27272a]">
                     {/* BOLD */}
                     <button
                       type="button"
@@ -6829,7 +7060,7 @@ export default function OperatorDashboard() {
                             editingItem.textBold === false ? true : false,
                         })
                       }
-                      className={`w-6 h-5 rounded text-xs font-bold font-sans transition-colors ${editingItem.textBold !== false ? "bg-sky-500/25 text-sky-200 border border-sky-400/35 font-black" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.06]"}`}
+                      className={`w-6 h-5 rounded text-xs font-bold font-sans transition-colors ${editingItem.textBold !== false ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65 font-black" : "text-slate-400 hover:text-slate-100 hover:bg-[#141417]/50"}`}
                     >
                       B
                     </button>
@@ -6842,7 +7073,7 @@ export default function OperatorDashboard() {
                           textItalic: !editingItem.textItalic,
                         })
                       }
-                      className={`w-6 h-5 rounded text-xs italic font-serif transition-colors ${editingItem.textItalic ? "bg-sky-500/25 text-sky-200 border border-sky-400/35" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.06]"}`}
+                      className={`w-6 h-5 rounded text-xs italic font-serif transition-colors ${editingItem.textItalic ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65" : "text-slate-400 hover:text-slate-100 hover:bg-[#141417]/50"}`}
                     >
                       I
                     </button>
@@ -6859,7 +7090,7 @@ export default function OperatorDashboard() {
                               : "uppercase",
                         });
                       }}
-                      className={`w-6 h-5 rounded text-xs font-mono transition-colors flex items-center justify-center ${(editingItem.textTransform || "uppercase") === "uppercase" ? "bg-sky-500/20 text-sky-300" : "text-slate-500 hover:text-slate-100 hover:bg-white/[0.06]"}`}
+                      className={`w-6 h-5 rounded text-xs font-mono transition-colors flex items-center justify-center ${(editingItem.textTransform || "uppercase") === "uppercase" ? "bg-[#141417] text-[#f5cc00]" : "text-slate-400 hover:text-slate-100 hover:bg-[#141417]/50"}`}
                       title="Toggle ALL CAPS / Normal Mode"
                     >
                       Aa
@@ -6874,7 +7105,7 @@ export default function OperatorDashboard() {
                             editingItem.textShadow === false ? true : false,
                         })
                       }
-                      className={`w-6 h-5 rounded text-xs font-semibold font-sans transition-colors flex items-center justify-center relative ${editingItem.textShadow !== false ? "bg-sky-500/25 text-sky-200 border border-sky-400/35" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.06]"}`}
+                      className={`w-6 h-5 rounded text-xs font-semibold font-sans transition-colors flex items-center justify-center relative ${editingItem.textShadow !== false ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65" : "text-slate-400 hover:text-slate-100 hover:bg-[#141417]/50"}`}
                       style={{ textShadow: "1px 1px 1px black" }}
                       title="Text Drop Shadow"
                     >
@@ -6889,7 +7120,7 @@ export default function OperatorDashboard() {
                           textOutline: !editingItem.textOutline,
                         })
                       }
-                      className={`w-6 h-5 rounded text-xs font-sans transition-colors flex items-center justify-center border-0 ${editingItem.textOutline ? "bg-sky-500/25 text-sky-200 border border-sky-400/35" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.06]"}`}
+                      className={`w-6 h-5 rounded text-xs font-sans transition-colors flex items-center justify-center border-0 ${editingItem.textOutline ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65" : "text-slate-400 hover:text-slate-100 hover:bg-[#141417]/50"}`}
                       title="Text Contrast Stroke Outline"
                     >
                       <span className="inline-block px-0.5 border border-current font-bold text-[8px] leading-none uppercase">
@@ -6898,10 +7129,10 @@ export default function OperatorDashboard() {
                     </button>
                   </div>
 
-                  <div className="w-[1px] h-4 bg-white/[0.08] mx-1.5"></div>
+                  <div className="w-[1px] h-4 bg-[#141417] mx-1.5"></div>
 
-                  {/* Horizontal Alignment Toggles */}
-                  <div className="flex bg-[#080A0E] rounded-md p-0.5 border border-white/[0.08]">
+                  {/* Horizontal Alignment Toggles (MS Word style symbols) */}
+                  <div className="flex bg-[#000000] rounded-md p-0.5 border border-[#27272a]">
                     {(["left", "center", "right"] as const).map((align) => (
                       <button
                         key={align}
@@ -6909,25 +7140,41 @@ export default function OperatorDashboard() {
                         onClick={() =>
                           setEditingItem({ ...editingItem, textAlign: align })
                         }
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-tighter transition-all ${
+                        title={
+                          align === "left"
+                            ? "Rata Kiri"
+                            : align === "right"
+                              ? "Rata Kanan"
+                              : "Rata Tengah"
+                        }
+                        aria-label={
+                          align === "left"
+                            ? "Rata Kiri"
+                            : align === "right"
+                              ? "Rata Kanan"
+                              : "Rata Tengah"
+                        }
+                        className={`p-1 rounded transition-all flex items-center justify-center ${
                           (editingItem.textAlign || "center") === align
-                            ? "bg-sky-500/25 text-sky-200 border border-sky-400/35"
-                            : "text-slate-400 hover:text-slate-100"
+                            ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
+                            : "text-slate-400 hover:text-slate-100 border border-transparent"
                         }`}
                       >
-                        {align === "left"
-                          ? "Kiri"
-                          : align === "right"
-                            ? "Kanan"
-                            : "Tengah"}
+                        {align === "left" ? (
+                          <AlignLeft className="w-3.5 h-3.5" />
+                        ) : align === "right" ? (
+                          <AlignRight className="w-3.5 h-3.5" />
+                        ) : (
+                          <AlignCenter className="w-3.5 h-3.5" />
+                        )}
                       </button>
                     ))}
                   </div>
 
-                  <div className="w-[1px] h-4 bg-white/[0.08] mx-1.5"></div>
+                  <div className="w-[1px] h-4 bg-[#141417] mx-1.5"></div>
 
-                  {/* Vertical Alignment Toggles */}
-                  <div className="flex bg-[#080A0E] rounded-md p-0.5 border border-white/[0.08]">
+                  {/* Vertical Alignment Toggles (MS Word / PowerPoint style symbols) */}
+                  <div className="flex bg-[#000000] rounded-md p-0.5 border border-[#27272a]">
                     {(["top", "center", "bottom"] as const).map((pos) => (
                       <button
                         key={pos}
@@ -6935,17 +7182,45 @@ export default function OperatorDashboard() {
                         onClick={() =>
                           setEditingItem({ ...editingItem, textPosition: pos })
                         }
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-tighter transition-all ${
+                        title={
+                          pos === "top"
+                            ? "Posisi Atas"
+                            : pos === "bottom"
+                              ? "Posisi Bawah"
+                              : "Posisi Tengah Vertikal"
+                        }
+                        aria-label={
+                          pos === "top"
+                            ? "Posisi Atas"
+                            : pos === "bottom"
+                              ? "Posisi Bawah"
+                              : "Posisi Tengah Vertikal"
+                        }
+                        className={`p-1 rounded transition-all flex items-center justify-center ${
                           (editingItem.textPosition || "center") === pos
-                            ? "bg-sky-500/25 text-sky-200 border border-sky-400/35"
-                            : "text-slate-400 hover:text-slate-100"
+                            ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
+                            : "text-slate-400 hover:text-slate-100 border border-transparent"
                         }`}
                       >
-                        {pos === "top"
-                          ? "Atas"
-                          : pos === "bottom"
-                            ? "Bawah"
-                            : "Tengah"}
+                        {pos === "top" ? (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                            <line x1="2" y1="2.5" x2="14" y2="2.5" />
+                            <line x1="3.5" y1="6" x2="12.5" y2="6" />
+                            <line x1="5" y1="9.5" x2="11" y2="9.5" />
+                          </svg>
+                        ) : pos === "bottom" ? (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                            <line x1="5" y1="6.5" x2="11" y2="6.5" />
+                            <line x1="3.5" y1="10" x2="12.5" y2="10" />
+                            <line x1="2" y1="13.5" x2="14" y2="13.5" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                            <line x1="4" y1="4.5" x2="12" y2="4.5" />
+                            <line x1="2" y1="8" x2="14" y2="8" />
+                            <line x1="4" y1="11.5" x2="12" y2="11.5" />
+                          </svg>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -7283,8 +7558,8 @@ export default function OperatorDashboard() {
                         </div>
                       )}
 
-                      {/* D. ARRANGE PANEL */}
-                      {editorActiveMenu === "arrange" && (
+                      {/* D. LEGACY HIDDEN BRANCH */}
+                      {editorActiveMenu === "animation" && (
                         <div className="flex flex-col gap-1 text-left">
                           <div className="flex flex-wrap items-center gap-1 text-[10px] py-0.5">
                             {/* Move Up */}
@@ -7668,15 +7943,15 @@ export default function OperatorDashboard() {
               {/* 3. CORE EDITING WORKSPACE PANEL (SPLIT IN TWO) */}
               <div
                 id="editor-workspace-container"
-                className="flex-1 overflow-hidden flex relative bg-[#07080B]"
+                className="flex-1 overflow-hidden flex relative bg-[#000000]"
               >
                 {/* A. LEFT SIDEBAR PANEL: WORKSHEET (Words, Slides, Masters) */}
                 <div
                   style={{ width: `${editorSidebarWidth}%` }}
-                  className="border-r border-white/[0.08] flex flex-col overflow-hidden bg-[#0B0D11] shrink-0"
+                  className="border-r border-[#27272a] flex flex-col overflow-hidden bg-[#09090b] shrink-0"
                 >
                   {/* Miniature Tabs Bar resembling EW7 on left side */}
-                  <div className="flex border-b border-white/[0.08] bg-[#0A0C10]">
+                  <div className="flex border-b border-[#27272a] bg-[#000000]">
                     {(["words", "slides", "masters"] as const).map((tab) => (
                       <button
                         key={tab}
@@ -7686,22 +7961,22 @@ export default function OperatorDashboard() {
                           else if (tab === "slides") setEditorTab("styles");
                           else if (tab === "masters") setEditorTab("masters");
                         }}
-                        className={`px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-colors border-r border-white/[0.06] ${
+                        className={`px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-colors border-r border-[#27272a] ${
                           (editorTab === "content" && tab === "words") ||
                           (editorTab === "styles" && tab === "slides") ||
                           (editorTab === "masters" && tab === "masters")
-                            ? "bg-[#0E1117] text-sky-200 border-t-2 border-t-sky-400 font-black"
-                            : "bg-[#0A0C10] text-slate-500 hover:text-slate-300 font-bold"
+                            ? "bg-[#09090b] text-[#f5cc00] border-t-2 border-t-[#f5cc00] font-black"
+                            : "bg-[#000000] text-slate-400 hover:text-slate-200 font-bold"
                         }`}
                       >
                         {tab}
                       </button>
                     ))}
-                    <div className="flex-1 bg-[#0A0C10]"></div>
+                    <div className="flex-1 bg-[#000000]"></div>
                   </div>
 
                   {/* LEFT TAB DIRECT PANEL CONTAINER */}
-                  <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#090B0F] p-3 space-y-4">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#000000]/65 p-3 space-y-4">
                     {editorTab === "content" ? (
                       <>
                         {/* Slide Blocks Stack matching EasyWorship 7 exactly */}
@@ -7710,9 +7985,10 @@ export default function OperatorDashboard() {
                             editingItem.verseLabels?.[i] !== undefined
                               ? editingItem.verseLabels[i]
                               : `Verse ${i + 1}`;
-                          const isChorus = labelValue
-                            .toLowerCase()
-                            .includes("chorus");
+                          const isJudul = /^(?:judul|judul lagu|title|intro)$/i.test(labelValue.trim());
+                          const isChorus =
+                            labelValue.toLowerCase().includes("chorus") ||
+                            labelValue.toLowerCase().includes("reff");
                           const isBridge = labelValue
                             .toLowerCase()
                             .includes("bridge");
@@ -7723,44 +7999,100 @@ export default function OperatorDashboard() {
                           // Calm muted tag header accents
                           const tagBgClass =
                             labelValue === ""
-                              ? "bg-white/[0.04] border-white/[0.08] text-slate-300"
-                              : isChorus
-                                ? "bg-rose-500/15 border-rose-400/20 text-rose-200"
-                                : isBridge
-                                  ? "bg-amber-500/15 border-amber-400/20 text-amber-200"
-                                  : isEnding
-                                    ? "bg-emerald-500/15 border-emerald-400/20 text-emerald-200"
-                                    : "bg-sky-500/15 border-sky-400/20 text-sky-200"; // standard Verse
+                              ? "bg-[#000000] border-[#27272a] text-slate-300"
+                              : isJudul
+                                ? "bg-[#cca000]/25 border-[#cca000]/60 text-[#f5cc00]"
+                                : isChorus
+                                  ? "bg-rose-500/15 border-rose-400/20 text-rose-200"
+                                  : isBridge
+                                    ? "bg-[#cca000]/20 border-[#cca000]/45 text-[#f5cc00]"
+                                    : isEnding
+                                      ? "bg-emerald-500/15 border-emerald-400/20 text-emerald-200"
+                                      : "bg-[#141417] border-[#27272a] text-[#f5cc00]"; // standard Verse/Ayat
+
+                          const isDraggingThis = dragSlideIdx === i;
+                          const isDropTarget =
+                            dragOverSlideIdx === i &&
+                            dragSlideIdx !== null &&
+                            dragSlideIdx !== i;
+                          const dropEdgeClass = isDropTarget
+                            ? dragSlideIdx! < i
+                              ? "border-b-[3px] border-b-[#f5cc00] ring-1 ring-[#f5cc00]/45"
+                              : "border-t-[3px] border-t-[#f5cc00] ring-1 ring-[#f5cc00]/45"
+                            : "";
 
                           return (
                             <div
                               key={i}
+                              draggable={!slideInputLockDrag}
+                              onDragStart={(e) => {
+                                if (slideInputLockDrag) {
+                                  e.preventDefault();
+                                  return;
+                                }
+                                setDragSlideIdx(i);
+                                setDragOverSlideIdx(i);
+                                e.dataTransfer.effectAllowed = "move";
+                                e.dataTransfer.setData("text/plain", String(i));
+                              }}
+                              onDragOver={(e) => {
+                                if (dragSlideIdx === null) return;
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                                if (dragOverSlideIdx !== i) {
+                                  setDragOverSlideIdx(i);
+                                }
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const fromIdx = dragSlideIdx;
+                                setDragSlideIdx(null);
+                                setDragOverSlideIdx(null);
+                                if (fromIdx !== null && fromIdx !== i) {
+                                  moveEditorSlide(fromIdx, i);
+                                }
+                              }}
+                              onDragEnd={() => {
+                                setDragSlideIdx(null);
+                                setDragOverSlideIdx(null);
+                                setSlideInputLockDrag(false);
+                              }}
                               onClick={() => setEditorPreviewIdx(i)}
                               className={`flex rounded-lg border transition-all ${
                                 editorPreviewIdx === i
-                                  ? "border-sky-400/70 shadow-[0_0_16px_rgba(56,189,248,0.12)] ring-1 ring-sky-400/20"
-                                  : "border-white/[0.07] hover:border-white/[0.14]"
-                              } bg-[#0E1117] group overflow-hidden`}
+                                  ? "border-[#f5cc00] shadow-[0_0_16px_rgba(245,204,0,0.16)] ring-1 ring-[#f5cc00]/25"
+                                  : "border-[#27272a] hover:border-[#cca000]/55"
+                              } ${isDraggingThis ? "opacity-45 scale-[0.98]" : ""} ${dropEdgeClass} bg-[#09090b] group overflow-hidden`}
                             >
-                              {/* Left Margin Gutter with Index details */}
-                              <div className="w-8 flex flex-col items-center justify-start bg-[#0A0C10] border-r border-white/[0.06] py-1.5 shrink-0 select-none text-slate-500 cursor-pointer">
-                                <span className="text-[10px] font-black font-mono leading-none tabular-nums">
-                                  {i + 1}
-                                </span>
-                                <div className="mt-1.5 opacity-60">
-                                  <Monitor className="w-3 h-3 text-slate-500" />
+                              {/* Left Margin Gutter with Drag Handle & Index details */}
+                              <div
+                                className="w-8 flex flex-col items-center justify-between bg-[#000000] border-r border-[#27272a] py-1.5 shrink-0 select-none text-[#cca000] cursor-grab active:cursor-grabbing"
+                                title="Geser ke atas atau bawah untuk memindahkan urutan slide"
+                              >
+                                <div className="flex flex-col items-center">
+                                  <span className="text-[10px] font-black font-mono leading-none tabular-nums">
+                                    {i + 1}
+                                  </span>
+                                  <div className="mt-1 opacity-60">
+                                    <Monitor className="w-3 h-3 text-[#cca000]" />
+                                  </div>
                                 </div>
+                                <GripVertical className="w-3.5 h-3.5 text-[#cca000]/65 group-hover:text-[#f5cc00] transition-colors" />
                               </div>
 
                               {/* Main block containing banner header & textarea */}
                               <div className="flex-1 flex flex-col min-w-0">
                                 {/* Slide Section Banner Color Input */}
                                 <div
-                                  className={`flex items-center justify-between border-b ${tagBgClass} py-0.5 px-2 font-semibold text-[10px] tracking-wide`}
+                                  className={`flex items-center justify-between border-b ${tagBgClass} py-0.5 px-2 font-semibold text-[10px] tracking-wide cursor-grab active:cursor-grabbing`}
                                 >
                                   <input
                                     type="text"
                                     value={labelValue}
+                                    onMouseEnter={() => setSlideInputLockDrag(true)}
+                                    onMouseLeave={() => setSlideInputLockDrag(false)}
+                                    onFocus={() => setSlideInputLockDrag(true)}
+                                    onBlur={() => setSlideInputLockDrag(false)}
                                     onChange={(e) => {
                                       const newLabels = editingItem.verseLabels
                                         ? [...editingItem.verseLabels]
@@ -7774,7 +8106,7 @@ export default function OperatorDashboard() {
                                       });
                                     }}
                                     placeholder="Sambungan Verse..."
-                                    className="bg-transparent border-none text-slate-100 font-bold placeholder-white/40 focus:outline-none focus:bg-black/25 uppercase font-sans tracking-wider py-0.5 px-1 rounded text-[10px] w-40 text-left"
+                                    className="bg-transparent border-none text-slate-100 font-bold placeholder-white/40 focus:outline-none focus:bg-black/25 uppercase font-sans tracking-wider py-0.5 px-1 rounded text-[10px] w-40 text-left cursor-text"
                                   />
 
                                   {/* Fast tag switch dropdown */}
@@ -7797,7 +8129,7 @@ export default function OperatorDashboard() {
                                           verseLabels: newLabels,
                                         });
                                       }}
-                                      className="px-1.5 py-0.5 bg-black/30 hover:bg-black/45 border border-white/[0.08] rounded text-[7px] font-black uppercase text-slate-200 transition-colors"
+                                      className="px-1.5 py-0.5 bg-[#000000]/70 hover:bg-[#000000] border border-[#27272a] rounded text-[7px] font-black uppercase text-slate-200 transition-colors"
                                       title="Toggle Chorus"
                                     >
                                       Toggle {isChorus ? "Verse" : "Chorus"}
@@ -7806,10 +8138,16 @@ export default function OperatorDashboard() {
                                 </div>
 
                                 {/* Slide Block Text Content textarea */}
-                                <div className="p-2 relative bg-[#080A0E]">
+                                <div className="p-2 relative bg-[#000000]">
                                   <textarea
                                     value={v}
-                                    onFocus={() => setEditorPreviewIdx(i)}
+                                    onMouseEnter={() => setSlideInputLockDrag(true)}
+                                    onMouseLeave={() => setSlideInputLockDrag(false)}
+                                    onFocus={() => {
+                                      setSlideInputLockDrag(true);
+                                      setEditorPreviewIdx(i);
+                                    }}
+                                    onBlur={() => setSlideInputLockDrag(false)}
                                     onChange={(e) => {
                                       const newVerses = [...editingItem.verses];
                                       newVerses[i] = e.target.value;
@@ -7818,7 +8156,7 @@ export default function OperatorDashboard() {
                                         verses: newVerses,
                                       });
                                     }}
-                                    className="w-full bg-transparent text-slate-100 text-[11px] font-medium leading-relaxed resize-none h-[72px] focus:outline-none scrollbar-thin transition-colors"
+                                    className="w-full bg-transparent text-slate-100 text-[11px] font-medium leading-relaxed resize-none h-[72px] focus:outline-none scrollbar-thin transition-colors cursor-text"
                                     placeholder="Enter verse lines here..."
                                   />
 
@@ -7971,7 +8309,7 @@ export default function OperatorDashboard() {
                                           }
                                         }
                                       }}
-                                      className="p-1 bg-[#12161F] border border-white/[0.1] text-xs text-sky-400 hover:text-white rounded"
+                                      className="p-1 bg-[#09090b] border border-[#27272a] text-xs text-[#f5cc00] hover:text-white rounded"
                                       title="Split this slide evenly into two"
                                     >
                                       <Scissors className="w-2.5 h-2.5" />
@@ -8040,7 +8378,7 @@ export default function OperatorDashboard() {
                                           JSON.stringify(newSched),
                                         );
                                       }}
-                                      className="p-1 bg-[#12161F] border border-white/[0.1] text-xs text-amber-300 hover:text-white rounded"
+                                      className="p-1 bg-[#09090b] border border-[#27272a] text-xs text-[#cca000] hover:text-[#f5cc00] rounded"
                                       title="Duplicate this slide"
                                     >
                                       <Copy className="w-2.5 h-2.5" />
@@ -8109,7 +8447,7 @@ export default function OperatorDashboard() {
                                           JSON.stringify(newSched),
                                         );
                                       }}
-                                      className="p-1 bg-[#12161F] border border-white/[0.1] text-xs text-rose-400 hover:text-white rounded"
+                                      className="p-1 bg-[#09090b] border border-[#27272a] text-xs text-rose-400 hover:text-white rounded"
                                       title="Remove slide"
                                     >
                                       <Trash className="w-2.5 h-2.5" />
@@ -8173,22 +8511,22 @@ export default function OperatorDashboard() {
                               JSON.stringify(newSched),
                             );
                           }}
-                          className="w-full py-2 bg-white/[0.04] hover:bg-white/[0.08] border border-dashed border-white/[0.14] hover:border-sky-400/50 rounded-lg text-[10px] font-bold text-slate-300 hover:text-sky-200 uppercase transition-colors flex items-center justify-center gap-1 cursor-pointer select-none"
+                          className="w-full py-2 bg-[#09090b] hover:bg-[#141417] border border-dashed border-[#cca000]/50 hover:border-[#f5cc00] rounded-lg text-[10px] font-bold text-slate-200 hover:text-[#f5cc00] uppercase transition-colors flex items-center justify-center gap-1 cursor-pointer select-none"
                         >
-                          <Plus className="w-3.5 h-3.5 text-sky-400" /> Tambah Blok Slide
+                          <Plus className="w-3.5 h-3.5 text-[#f5cc00]" /> Tambah Blok Slide
                           Baru
                         </button>
                       </>
                     ) : editorTab === "styles" ? (
                       // Tab styles configuration inside Left column
-                      <div className="space-y-4 text-xs text-slate-300 bg-[#0E1117] p-4 rounded-xl border border-white/[0.08]">
-                        <div className="text-slate-100 font-bold text-[10px] uppercase tracking-widest border-b border-white/[0.07] pb-1.5 mb-2">
+                      <div className="space-y-4 text-xs text-slate-300 bg-[#09090b] p-4 rounded-xl border border-[#27272a]">
+                        <div className="text-[#f5cc00] font-bold text-[10px] uppercase tracking-widest border-b border-[#27272a] pb-1.5 mb-2">
                           Display Preferences
                         </div>
 
                         {/* Font list */}
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase block">
+                          <label className="text-[10px] font-bold text-slate-300 uppercase block">
                             Font Family:
                           </label>
                           <select
@@ -8199,7 +8537,7 @@ export default function OperatorDashboard() {
                                 fontFamily: e.target.value,
                               })
                             }
-                            className="bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 text-[11px] font-semibold text-slate-100 rounded-lg w-full p-2 outline-none"
+                            className="bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] text-[11px] font-semibold text-slate-100 rounded-lg w-full p-2 outline-none"
                           >
                             <option value="Sans / Inter">
                               Sans-Serif (Default Inter)
@@ -8227,29 +8565,30 @@ export default function OperatorDashboard() {
 
                         {/* Transition selections */}
                         <div className="space-y-1 pt-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase block">
+                          <label className="text-[10px] font-bold text-slate-300 uppercase block">
                             Slide Transition:
                           </label>
                           <select
                             value={editingItem.slideTransition || "fade"}
-                            onChange={(e) =>
-                              setEditingItem({
-                                ...editingItem,
+                            onChange={(e) => {
+                              applyAnimationUpdate({
                                 slideTransition: e.target.value,
-                              })
-                            }
-                            className="bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 text-[11px] font-semibold text-slate-100 rounded-lg w-full p-2 outline-none"
+                              });
+                              triggerAnimPreview("slide");
+                            }}
+                            className="bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] text-[11px] font-semibold text-slate-100 rounded-lg w-full p-2 outline-none"
                           >
-                            <option value="fade">Fade Out & In</option>
-                            <option value="slide">Slide Up Scroll</option>
-                            <option value="zoom">Zoom Pop Entry</option>
-                            <option value="none">Immediate Cut</option>
+                            {SLIDE_ANIMATION_PRESETS.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.label}
+                              </option>
+                            ))}
                           </select>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 pt-1">
                           <div className="space-y-1">
-                            <label className="text-[9px] font-bold text-slate-400 block uppercase">
+                            <label className="text-[9px] font-bold text-slate-300 block uppercase">
                               Word Spacing
                             </label>
                             <select
@@ -8260,7 +8599,7 @@ export default function OperatorDashboard() {
                                   textSpacing: e.target.value,
                                 })
                               }
-                              className="bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 text-[10px] font-semibold text-slate-100 rounded-lg w-full p-1.5 outline-none"
+                              className="bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] text-[10px] font-semibold text-slate-100 rounded-lg w-full p-1.5 outline-none"
                             >
                               <option value="snug">Padat</option>
                               <option value="normal">Normal</option>
@@ -8270,7 +8609,7 @@ export default function OperatorDashboard() {
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-[9px] font-bold text-slate-400 block uppercase">
+                            <label className="text-[9px] font-bold text-slate-300 block uppercase">
                               Letter Spacing
                             </label>
                             <select
@@ -8281,7 +8620,7 @@ export default function OperatorDashboard() {
                                   textTracking: e.target.value,
                                 })
                               }
-                              className="bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 text-[10px] font-semibold text-slate-100 rounded-lg w-full p-1.5 outline-none"
+                              className="bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] text-[10px] font-semibold text-slate-100 rounded-lg w-full p-1.5 outline-none"
                             >
                               <option value="tighter">Rapat</option>
                               <option value="normal">Normal</option>
@@ -8291,8 +8630,8 @@ export default function OperatorDashboard() {
                         </div>
 
                         {/* Background override inside Styles Tab */}
-                        <div className="space-y-1 pt-2 border-t border-white/[0.07]">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase block">
+                        <div className="space-y-1 pt-2 border-t border-[#27272a]">
+                          <label className="text-[10px] font-bold text-slate-300 uppercase block">
                             Override Background (Opsional):
                           </label>
                           <input
@@ -8305,9 +8644,9 @@ export default function OperatorDashboard() {
                               })
                             }
                             placeholder="Contoh: #000000 atau URL Gambar"
-                            className="bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 text-slate-100 rounded-lg p-2 text-xs w-full focus:outline-none placeholder-slate-600 font-mono"
+                            className="bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] text-slate-100 rounded-lg p-2 text-xs w-full focus:outline-none placeholder-slate-500 font-mono"
                           />
-                          <p className="text-[9px] text-slate-500 leading-normal">
+                          <p className="text-[9px] text-slate-400 leading-normal">
                             Kosongkan kolom ini agar presentasi menggunakan
                             latar belakang aktif utama. Anda bisa memasukkan hex
                             warna solid (contoh: #1a1a1a) atau URL gambar
@@ -8316,16 +8655,16 @@ export default function OperatorDashboard() {
                         </div>
 
                         {/* Background Adjustments configuration */}
-                        <div className="space-y-3 pt-3 border-t border-white/[0.07] text-left">
-                          <span className="text-[10px] font-bold text-sky-400 uppercase tracking-wider block">
+                        <div className="space-y-3 pt-3 border-t border-[#27272a] text-left">
+                          <span className="text-[10px] font-bold text-[#cca000] uppercase tracking-wider block">
                             Pengaturan Detil Gambar Latar Belakang
                           </span>
 
                           {/* Opacity slider */}
                           <div className="space-y-1">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase">
+                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-300 uppercase">
                               <span>Transparansi (Opacity)</span>
-                              <span className="font-mono text-[10px] text-sky-300 tabular-nums">
+                              <span className="font-mono text-[10px] text-[#f5cc00] tabular-nums">
                                 {editingItem.bgOpacity !== undefined
                                   ? editingItem.bgOpacity
                                   : 80}
@@ -8347,15 +8686,15 @@ export default function OperatorDashboard() {
                                   bgOpacity: parseInt(e.target.value),
                                 })
                               }
-                              className="w-full h-1 bg-[#080A0E] rounded appearance-none cursor-pointer accent-sky-400"
+                              className="w-full h-1 bg-[#000000] rounded appearance-none cursor-pointer accent-[#f5cc00]"
                             />
                           </div>
 
                           {/* Brightness slider */}
                           <div className="space-y-1">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase">
+                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-300 uppercase">
                               <span>Kecerahan (Brightness)</span>
-                              <span className="font-mono text-[10px] text-sky-300 tabular-nums">
+                              <span className="font-mono text-[10px] text-[#f5cc00] tabular-nums">
                                 {editingItem.bgBrightness !== undefined
                                   ? editingItem.bgBrightness
                                   : 75}
@@ -8377,15 +8716,15 @@ export default function OperatorDashboard() {
                                   bgBrightness: parseInt(e.target.value),
                                 })
                               }
-                              className="w-full h-1 bg-[#080A0E] rounded appearance-none cursor-pointer accent-sky-400"
+                              className="w-full h-1 bg-[#000000] rounded appearance-none cursor-pointer accent-[#f5cc00]"
                             />
                           </div>
 
                           {/* Blur slider */}
                           <div className="space-y-1">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase">
+                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-300 uppercase">
                               <span>Efek Buram (Blur)</span>
-                              <span className="font-mono text-[10px] text-sky-300 tabular-nums">
+                              <span className="font-mono text-[10px] text-[#f5cc00] tabular-nums">
                                 {editingItem.bgBlur !== undefined
                                   ? editingItem.bgBlur
                                   : 0}
@@ -8407,15 +8746,15 @@ export default function OperatorDashboard() {
                                   bgBlur: parseInt(e.target.value),
                                 })
                               }
-                              className="w-full h-1 bg-[#080A0E] rounded appearance-none cursor-pointer accent-sky-400"
+                              className="w-full h-1 bg-[#000000] rounded appearance-none cursor-pointer accent-[#f5cc00]"
                             />
                           </div>
 
                           {/* Scale Slider */}
                           <div className="space-y-1">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase">
+                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-300 uppercase">
                               <span>Skala / Ukuran (Zoom)</span>
-                              <span className="font-mono text-[10px] text-sky-300 tabular-nums">
+                              <span className="font-mono text-[10px] text-[#f5cc00] tabular-nums">
                                 {editingItem.bgScale !== undefined
                                   ? editingItem.bgScale
                                   : 100}
@@ -8437,13 +8776,13 @@ export default function OperatorDashboard() {
                                   bgScale: parseInt(e.target.value),
                                 })
                               }
-                              className="w-full h-1 bg-[#080A0E] rounded appearance-none cursor-pointer accent-sky-400"
+                              className="w-full h-1 bg-[#000000] rounded appearance-none cursor-pointer accent-[#f5cc00]"
                             />
                           </div>
 
                           {/* Scale Fit Select buttons */}
                           <div className="space-y-1">
-                            <label className="text-[9px] font-bold text-slate-400 block uppercase">
+                            <label className="text-[9px] font-bold text-slate-300 block uppercase">
                               Mode Skala (Scale Fit):
                             </label>
                             <div className="grid grid-cols-3 gap-1">
@@ -8460,8 +8799,8 @@ export default function OperatorDashboard() {
                                     }
                                     className={`py-1 rounded-md text-[9px] font-black uppercase tracking-wide transition-colors border ${
                                       (editingItem.bgFit || "cover") === fit
-                                        ? "bg-sky-500/20 text-sky-200 border-sky-400/45"
-                                        : "bg-[#080A0E] border-white/[0.08] text-slate-400 hover:text-slate-100"
+                                        ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65"
+                                        : "bg-[#000000] border-[#27272a] text-slate-300 hover:text-slate-100"
                                     }`}
                                   >
                                     {fit === "cover"
@@ -8479,11 +8818,11 @@ export default function OperatorDashboard() {
                     ) : (
                       // Tab masters configuration inside Left column
                       <div className="space-y-4">
-                        <div className="bg-[#0E1117] p-4 rounded-xl border border-white/[0.08] space-y-4">
-                          <div className="text-slate-100 font-bold text-[10px] uppercase tracking-widest border-b border-white/[0.07] pb-1.5">
+                        <div className="bg-[#09090b] p-4 rounded-xl border border-[#27272a] space-y-4">
+                          <div className="text-[#f5cc00] font-bold text-[10px] uppercase tracking-widest border-b border-[#27272a] pb-1.5">
                             Master Themes Catalog
                           </div>
-                          <p className="text-[10px] text-slate-400 leading-normal">
+                          <p className="text-[10px] text-slate-300 leading-normal">
                             Klik tema master di bawah ini untuk menerapkan skema
                             gaya, font, warna, bayangan, posisi teks, dan
                             dekorasi latar belakang secara instan pada slide
@@ -8525,7 +8864,7 @@ export default function OperatorDashboard() {
                                       "success",
                                     );
                                   }}
-                                  className="w-full text-left rounded-lg bg-[#080A0E] border border-white/[0.07] hover:border-sky-400/50 p-2.5 flex gap-2.5 transition-all hover:bg-white/[0.04] relative overflow-hidden group cursor-pointer"
+                                  className="w-full text-left rounded-lg bg-[#000000] border border-[#27272a] hover:border-[#f5cc00] p-2.5 flex gap-2.5 transition-all hover:bg-[#141417]/55 relative overflow-hidden group cursor-pointer"
                                 >
                                   {/* Thumbnail Preview Area */}
                                   <div
@@ -8558,10 +8897,10 @@ export default function OperatorDashboard() {
                                   </div>
 
                                   <div className="flex-1 min-w-0">
-                                    <p className="text-[10px] font-bold text-slate-100 leading-normal truncate group-hover:text-sky-300 transition-colors">
+                                    <p className="text-[10px] font-bold text-slate-100 leading-normal truncate group-hover:text-[#f5cc00] transition-colors">
                                       {theme.name}
                                     </p>
-                                    <p className="text-[9px] text-slate-500 leading-tight line-clamp-2">
+                                    <p className="text-[9px] text-slate-400 leading-tight line-clamp-2">
                                       {theme.desc}
                                     </p>
                                   </div>
@@ -8572,8 +8911,8 @@ export default function OperatorDashboard() {
                         </div>
 
                         {/* Informative master control settings reminder */}
-                        <div className="p-3 bg-sky-500/5 rounded-xl border border-sky-400/20 text-[10px] text-slate-400 space-y-1.5 leading-normal">
-                          <p className="font-bold text-sky-400 uppercase tracking-wider text-[8px]">
+                        <div className="p-3 bg-[#09090b] rounded-xl border border-[#cca000]/35 text-[10px] text-slate-300 space-y-1.5 leading-normal">
+                          <p className="font-bold text-[#f5cc00] uppercase tracking-wider text-[8px]">
                             EW7 Pro Tips:
                           </p>
                           <p>
@@ -8581,7 +8920,7 @@ export default function OperatorDashboard() {
                             utama. Setelah menerapkan Tema Master, Anda dapat
                             menyempurnakan bagian teks, warna, transparansi,
                             ukuran gambar latar di tab{" "}
-                            <span className="text-slate-200">Styles</span> secara
+                            <span className="text-slate-100">Styles</span> secara
                             individual.
                           </p>
                         </div>
@@ -8592,7 +8931,7 @@ export default function OperatorDashboard() {
 
                 {/* Drag Handle for the resizable text column */}
                 <div
-                  className="w-1.5 cursor-col-resize hover:bg-sky-400/70 bg-[#0A0C10] active:bg-sky-500 transition-all h-full select-none flex-shrink-0 relative z-40 group flex items-center justify-center border-x border-white/[0.04]"
+                  className="w-1.5 cursor-col-resize hover:bg-[#f5cc00]/75 bg-[#000000] active:bg-[#f5cc00] transition-all h-full select-none flex-shrink-0 relative z-40 group flex items-center justify-center border-x border-[#27272a]"
                   onMouseDown={(e) => {
                     e.preventDefault();
                     const handleMouseMove = (moveEvent: MouseEvent) => {
@@ -8620,7 +8959,7 @@ export default function OperatorDashboard() {
                     document.addEventListener("mouseup", handleMouseUp);
                   }}
                 >
-                  <div className="w-[2px] h-8 bg-white/15 group-hover:bg-sky-300 rounded transition-colors" />
+                  <div className="w-[2px] h-8 bg-[#cca000]/40 group-hover:bg-[#f5cc00] rounded transition-colors" />
                 </div>
 
                 {/* B. MIDDLE SPLIT: ACTIVE SPECIAL MENUS PANEL (Preserves Slide Visibility) */}
@@ -8632,19 +8971,19 @@ export default function OperatorDashboard() {
                       animate={{ width: "31%", opacity: 1 }}
                       exit={{ width: 0, opacity: 0 }}
                       transition={{ duration: 0.18, ease: "easeInOut" }}
-                      className="w-[31%] border-r border-white/[0.08] flex flex-col overflow-hidden bg-[#0B0D11] select-none text-slate-300 shrink-0 border-l border-white/[0.06]"
+                      className="w-[31%] border-r border-[#27272a] flex flex-col overflow-hidden bg-[#09090b] select-none text-slate-200 shrink-0 border-l border-[#27272a]"
                     >
-                      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4 flex flex-col h-full bg-[#090B0F]">
+                      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4 flex flex-col h-full bg-[#000000]/55">
                         {/* Title bar with Close toggle button */}
-                        <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                          <span className="text-[10px] font-black tracking-widest text-sky-400 uppercase flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                        <div className="flex items-center justify-between border-b border-[#27272a] pb-2.5">
+                          <span className="text-[10px] font-black tracking-widest text-[#f5cc00] uppercase flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#f5cc00]" />
                             {editorActiveMenu === "shape" && "Shape Frame"}
                             {editorActiveMenu === "gambar_bg" &&
                               "Background Image"}
                             {editorActiveMenu === "video_bg" &&
                               "Background Video"}
-                            {editorActiveMenu === "arrange" && "Susun Slide"}
+                            {editorActiveMenu === "animation" && "Animasi Slide & Teks"}
                             {editorActiveMenu === "logo_overlay" &&
                               "Logo Overlay"}
                             {editorActiveMenu === "scripture" &&
@@ -8653,14 +8992,14 @@ export default function OperatorDashboard() {
                           <button
                             type="button"
                             onClick={() => setEditorActiveMenu(null)}
-                            className="px-2 py-1 bg-white/[0.05] hover:bg-white/[0.1] text-slate-400 hover:text-slate-100 rounded-md text-[8.5px] uppercase font-black border border-white/[0.08] transition-all cursor-pointer"
+                            className="px-2 py-1 bg-[#09090b] hover:bg-[#141417] text-slate-300 hover:text-[#f5cc00] rounded-md text-[8.5px] uppercase font-black border border-[#27272a] transition-all cursor-pointer"
                           >
                             ✕ Tutup
                           </button>
                         </div>
                         {editorActiveMenu === "shape" && (
                           <div className="flex flex-col gap-2.5 text-left text-[10.5px]">
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block">
+                            <span className="text-[9px] font-black text-[#cca000] uppercase tracking-wider block">
                               Pilih Bingkai Slide Dekoratif
                             </span>
                             <div className="grid grid-cols-2 gap-2">
@@ -8687,8 +9026,8 @@ export default function OperatorDashboard() {
                                     }}
                                     className={`p-2 px-3 rounded-lg border text-center h-11 flex items-center justify-center transition-all cursor-pointer ${
                                       isSelected
-                                        ? "bg-sky-500/15 border-sky-400/60 text-sky-200 text-[10px] font-black"
-                                        : "bg-[#0E1117] hover:bg-white/[0.06] border-white/[0.07] text-slate-400 text-[9.5px] font-bold"
+                                        ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00] text-[10px] font-black"
+                                        : "bg-[#09090b] hover:bg-[#141417]/60 border-[#27272a] text-slate-300 text-[9.5px] font-bold"
                                     }`}
                                   >
                                     {shape.label}
@@ -8750,8 +9089,8 @@ export default function OperatorDashboard() {
                                     }
                                     className={`rounded-lg border text-center overflow-hidden h-14 flex flex-col justify-end p-1.5 relative transition-all cursor-pointer ${
                                       isSelected
-                                        ? "border-sky-400 ring-1 ring-sky-400/40 shadow-md font-black bg-sky-500/15"
-                                        : "border-white/[0.08] hover:border-white/25 bg-[#0E1117]"
+                                        ? "border-[#f5cc00] ring-1 ring-[#f5cc00]/45 shadow-md font-black bg-[#141417]"
+                                        : "border-[#27272a] hover:border-[#cca000]/60 bg-[#09090b]"
                                     }`}
                                     style={{
                                       background:
@@ -8778,9 +9117,9 @@ export default function OperatorDashboard() {
                             </div>
 
                             {/* Control block */}
-                            <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.07] text-[10px]">
+                            <div className="flex flex-col gap-2 pt-2 border-t border-[#27272a] text-[10px]">
                               <div className="space-y-1">
-                                <span className="text-[9px] text-slate-400 font-bold uppercase block">
+                                <span className="text-[9px] text-slate-300 font-bold uppercase block">
                                   Tautan Gambar:
                                 </span>
                                 <input
@@ -8793,7 +9132,7 @@ export default function OperatorDashboard() {
                                     })
                                   }
                                   placeholder="Masukkan URL Gambar..."
-                                  className="w-full bg-[#080A0E] border border-white/[0.09] rounded-lg px-2.5 py-1.5 text-[10.5px] text-slate-100 placeholder-slate-600 focus:outline-none focus:border-sky-400/50"
+                                  className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-[10.5px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#f5cc00]"
                                 />
                               </div>
                               <div className="flex gap-2">
@@ -8802,9 +9141,9 @@ export default function OperatorDashboard() {
                                   onClick={() =>
                                     bgFileInputRef.current?.click()
                                   }
-                                  className="flex-1 py-1.5 bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 rounded-lg text-[9px] font-black uppercase text-sky-200 hover:text-white transition cursor-pointer flex items-center justify-center gap-1 shrink-0"
+                                  className="flex-1 py-1.5 bg-[#141417] hover:bg-[#141417]/80 border border-[#cca000]/60 rounded-lg text-[9px] font-black uppercase text-[#f5cc00] transition cursor-pointer flex items-center justify-center gap-1 shrink-0"
                                 >
-                                  <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+                                  <FolderOpen className="w-3.5 h-3.5 text-[#f5cc00]" />
                                   <span>Unggah Gambar</span>
                                 </button>
                                 {editingItem.backgroundOverride && (
@@ -8823,7 +9162,7 @@ export default function OperatorDashboard() {
                                 )}
                               </div>
                               <div className="space-y-1 mt-1">
-                                <span className="text-[9px] text-slate-400 font-bold uppercase block">
+                                <span className="text-[9px] text-slate-300 font-bold uppercase block">
                                   Gaya Tampilan Background:
                                 </span>
                                 <div className="grid grid-cols-3 gap-1">
@@ -8840,8 +9179,8 @@ export default function OperatorDashboard() {
                                         }
                                         className={`py-1.5 rounded-md text-[8.5px] font-black uppercase transition-colors border ${
                                           (editingItem.bgFit || "cover") === fit
-                                            ? "bg-sky-500/20 text-sky-200 border-sky-400/45 font-black"
-                                            : "bg-[#0E1117] border-white/[0.08] text-slate-400 hover:text-slate-100"
+                                            ? "bg-[#141417] text-[#f5cc00] border-[#cca000]/65 font-black"
+                                            : "bg-[#09090b] border-[#27272a] text-slate-300 hover:text-slate-100"
                                         }`}
                                       >
                                         {fit === "cover"
@@ -8864,7 +9203,7 @@ export default function OperatorDashboard() {
                                       bgFit: "cover",
                                     })
                                   }
-                                  className="w-full mt-2.5 py-2 bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-[9px] font-black uppercase text-slate-300 hover:text-white rounded-lg transition cursor-pointer"
+                                  className="w-full mt-2.5 py-2 bg-[#09090b] hover:bg-[#141417] border border-[#27272a] text-[9px] font-black uppercase text-slate-200 hover:text-[#f5cc00] rounded-lg transition cursor-pointer"
                                 >
                                   Reset Posisi & Zoom Foto
                                 </button>
@@ -8876,13 +9215,13 @@ export default function OperatorDashboard() {
                         {/* C2. VIDEO BACKGROUNDS PANEL */}
                         {editorActiveMenu === "video_bg" && (
                           <div className="flex flex-col gap-3 text-left">
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block font-sans">
+                            <span className="text-[9px] font-black text-[#cca000] uppercase tracking-wider block font-sans">
                               Koleksi Video Latar MP4
                             </span>
 
                             <div className="grid grid-cols-3 gap-1.5 max-h-[190px] overflow-y-auto pr-1">
                               {customVideoBackgrounds.length === 0 ? (
-                                <div className="col-span-full py-4 text-center text-slate-500 text-[10px] bg-[#080A0E] rounded-lg border border-dashed border-white/[0.08]">
+                                <div className="col-span-full py-4 text-center text-slate-400 text-[10px] bg-[#000000] rounded-lg border border-dashed border-[#27272a]">
                                   Belum ada kustom video. Unggah MP4 di bawah.
                                 </div>
                               ) : (
@@ -8901,12 +9240,12 @@ export default function OperatorDashboard() {
                                       }
                                       className={`slide-canvas-preserve rounded-lg border text-center overflow-hidden h-14 flex flex-col justify-end p-1.5 relative transition-all bg-black cursor-pointer ${
                                         isSelected
-                                          ? "border-sky-400 ring-1 ring-sky-400/40 shadow-md bg-sky-500/15"
-                                          : "border-white/[0.08] hover:border-white/25"
+                                          ? "border-[#f5cc00] ring-1 ring-[#f5cc00]/45 shadow-md bg-[#141417]"
+                                          : "border-[#27272a] hover:border-[#cca000]/60"
                                       }`}
                                     >
-                                      <div className="absolute inset-0 flex items-center justify-center opacity-60 pointer-events-none z-10">
-                                        <Video className="w-5 h-5 text-sky-400" />
+                                      <div className="absolute inset-0 flex items-center justify-center opacity-70 pointer-events-none z-10">
+                                        <Video className="w-5 h-5 text-[#f5cc00]" />
                                       </div>
                                       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent z-[1]" />
                                       <span className="text-[8px] font-black text-white line-clamp-1 relative z-10 leading-none">
@@ -8918,9 +9257,9 @@ export default function OperatorDashboard() {
                               )}
                             </div>
 
-                            <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.07] text-[10px]">
+                            <div className="flex flex-col gap-2 pt-2 border-t border-[#27272a] text-[10px]">
                               <div className="space-y-1">
-                                <span className="text-[9px] text-slate-400 font-bold uppercase block">
+                                <span className="text-[9px] text-slate-300 font-bold uppercase block">
                                   Tautan Video MP4:
                                 </span>
                                 <input
@@ -8933,7 +9272,7 @@ export default function OperatorDashboard() {
                                     })
                                   }
                                   placeholder="https://example.com/slide-bg.mp4"
-                                  className="w-full bg-[#080A0E] border border-white/[0.09] rounded-lg px-2 text-[10px] py-1.5 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-sky-400/50"
+                                  className="w-full bg-[#000000] border border-[#27272a] rounded-lg px-2 text-[10px] py-1.5 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#f5cc00]"
                                 />
                               </div>
                               <div className="flex gap-1.5">
@@ -8942,9 +9281,9 @@ export default function OperatorDashboard() {
                                   onClick={() =>
                                     bgFileInputRef.current?.click()
                                   }
-                                  className="flex-1 py-1.5 bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 rounded-lg text-[9px] font-black uppercase text-sky-200 hover:text-white transition cursor-pointer flex items-center justify-center gap-1 shrink-0"
+                                  className="flex-1 py-1.5 bg-[#141417] hover:bg-[#141417]/80 border border-[#cca000]/60 rounded-lg text-[9px] font-black uppercase text-[#f5cc00] transition cursor-pointer flex items-center justify-center gap-1 shrink-0"
                                 >
-                                  <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+                                  <FolderOpen className="w-3.5 h-3.5 text-[#f5cc00]" />
                                   <span>Unggah MP4</span>
                                 </button>
                                 <button
@@ -8958,7 +9297,7 @@ export default function OperatorDashboard() {
                                       bgFit: "cover",
                                     })
                                   }
-                                  className="px-2.5 py-1.5 bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-[8px] font-black uppercase text-slate-300 hover:text-white rounded-lg transition cursor-pointer shrink-0"
+                                  className="px-2.5 py-1.5 bg-[#09090b] hover:bg-[#141417] border border-[#27272a] text-[8px] font-black uppercase text-slate-200 hover:text-[#f5cc00] rounded-lg transition cursor-pointer shrink-0"
                                 >
                                   Reset
                                 </button>
@@ -8981,386 +9320,188 @@ export default function OperatorDashboard() {
                           </div>
                         )}
 
-                        {/* D. ARRANGE PANEL */}
-                        {editorActiveMenu === "arrange" && (
-                          <div className="flex flex-col gap-2 text-left">
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block font-sans mb-1">
-                              Struktur Navigasi Slide
-                            </span>
-                            <div className="flex flex-col gap-2 text-[10.5px]">
-                              {/* Move Up */}
+                        {/* D. ANIMATION STUDIO PANEL */}
+                        {editorActiveMenu === "animation" && (
+                          <div className="flex flex-col gap-3 text-left">
+                            {/* Mode Tabs: Animasi Slide vs Animasi Teks */}
+                            <div className="grid grid-cols-2 bg-[#000000] rounded-lg p-0.5 border border-[#27272a] text-[10px]">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (editorPreviewIdx <= 0) return;
-                                  const newVerses = [...editingItem.verses];
-                                  const vTemp = newVerses[editorPreviewIdx];
-                                  newVerses[editorPreviewIdx] =
-                                    newVerses[editorPreviewIdx - 1];
-                                  newVerses[editorPreviewIdx - 1] = vTemp;
-
-                                  const isBible =
-                                    editingItem.id?.startsWith("bible-") ||
-                                    editingItem.type === "bible";
-                                  const originalLabels = editingItem.verseLabels
-                                    ? [...editingItem.verseLabels]
-                                    : editingItem.verses.map((_, idx) =>
-                                        isBible
-                                          ? `Ayat ${idx + 1}`
-                                          : `Verse ${idx + 1}`,
-                                      );
-                                  const tempLabels = [...originalLabels];
-                                  const lTemp = tempLabels[editorPreviewIdx];
-                                  tempLabels[editorPreviewIdx] =
-                                    tempLabels[editorPreviewIdx - 1];
-                                  tempLabels[editorPreviewIdx - 1] = lTemp;
-
-                                  const newLabels = regenerateSlideLabels(
-                                    newVerses,
-                                    tempLabels,
-                                    isBible,
-                                  );
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                    verseLabels: newLabels,
-                                  };
-
-                                  setEditingItem(updatedItem);
-                                  setEditorPreviewIdx(editorPreviewIdx - 1);
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                disabled={editorPreviewIdx <= 0}
-                                className="w-full py-2 bg-[#0E1117] hover:bg-white/[0.06] text-slate-200 hover:text-white disabled:opacity-30 border border-white/[0.08] rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1 cursor-pointer"
+                                onClick={() => setEditorAnimTab("slide")}
+                                className={`py-1.5 rounded-md font-black uppercase tracking-wider transition-all ${
+                                  editorAnimTab === "slide"
+                                    ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
+                                    : "text-slate-400 hover:text-slate-100"
+                                }`}
                               >
-                                ↑ Naikkan Slide
+                                Animasi Slide
                               </button>
-
-                              {/* Move Down */}
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (
-                                    editorPreviewIdx >=
-                                    editingItem.verses.length - 1
-                                  )
-                                    return;
-                                  const newVerses = [...editingItem.verses];
-                                  const vTemp = newVerses[editorPreviewIdx];
-                                  newVerses[editorPreviewIdx] =
-                                    newVerses[editorPreviewIdx + 1];
-                                  newVerses[editorPreviewIdx + 1] = vTemp;
-
-                                  const isBible =
-                                    editingItem.id?.startsWith("bible-") ||
-                                    editingItem.type === "bible";
-                                  const originalLabels = editingItem.verseLabels
-                                    ? [...editingItem.verseLabels]
-                                    : editingItem.verses.map((_, idx) =>
-                                        isBible
-                                          ? `Ayat ${idx + 1}`
-                                          : `Verse ${idx + 1}`,
-                                      );
-                                  const tempLabels = [...originalLabels];
-                                  const lTemp = tempLabels[editorPreviewIdx];
-                                  tempLabels[editorPreviewIdx] =
-                                    tempLabels[editorPreviewIdx + 1];
-                                  tempLabels[editorPreviewIdx + 1] = lTemp;
-
-                                  const newLabels = regenerateSlideLabels(
-                                    newVerses,
-                                    tempLabels,
-                                    isBible,
-                                  );
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                    verseLabels: newLabels,
-                                  };
-
-                                  setEditingItem(updatedItem);
-                                  setEditorPreviewIdx(editorPreviewIdx + 1);
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                disabled={
-                                  editorPreviewIdx >=
-                                  editingItem.verses.length - 1
-                                }
-                                className="w-full py-2 bg-[#0E1117] hover:bg-white/[0.06] text-slate-200 hover:text-white disabled:opacity-30 border border-white/[0.08] rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1 cursor-pointer"
+                                onClick={() => setEditorAnimTab("text")}
+                                className={`py-1.5 rounded-md font-black uppercase tracking-wider transition-all ${
+                                  editorAnimTab === "text"
+                                    ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
+                                    : "text-slate-400 hover:text-slate-100"
+                                }`}
                               >
-                                ↓ Turunkan Slide
-                              </button>
-
-                              <div className="h-px bg-white/[0.07] my-1"></div>
-
-                              {/* Duplicate Slide */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newVerses = [...editingItem.verses];
-                                  const isBible =
-                                    editingItem.id?.startsWith("bible-") ||
-                                    editingItem.type === "bible";
-                                  const originalLabels = editingItem.verseLabels
-                                    ? [...editingItem.verseLabels]
-                                    : editingItem.verses.map((_, idx) =>
-                                        isBible
-                                          ? `Ayat ${idx + 1}`
-                                          : `Verse ${idx + 1}`,
-                                      );
-                                  const originalLabel =
-                                    originalLabels[editorPreviewIdx] || "";
-
-                                  newVerses.splice(
-                                    editorPreviewIdx + 1,
-                                    0,
-                                    newVerses[editorPreviewIdx],
-                                  );
-                                  const tempLabels = [...originalLabels];
-                                  tempLabels.splice(
-                                    editorPreviewIdx + 1,
-                                    0,
-                                    originalLabel,
-                                  );
-
-                                  const newLabels = regenerateSlideLabels(
-                                    newVerses,
-                                    tempLabels,
-                                    isBible,
-                                  );
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                    verseLabels: newLabels,
-                                  };
-
-                                  setEditingItem(updatedItem);
-                                  setEditorPreviewIdx(editorPreviewIdx + 1);
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                className="w-full py-2 bg-[#0E1117] hover:bg-white/[0.06] text-slate-200 hover:text-white border border-white/[0.08] rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1 cursor-pointer"
-                              >
-                                Duplikasi Slide
-                              </button>
-
-                              {/* Add Slide */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newVerses = [...editingItem.verses];
-                                  const isBible =
-                                    editingItem.id?.startsWith("bible-") ||
-                                    editingItem.type === "bible";
-                                  const originalLabels = editingItem.verseLabels
-                                    ? [...editingItem.verseLabels]
-                                    : editingItem.verses.map((_, idx) =>
-                                        isBible
-                                          ? `Ayat ${idx + 1}`
-                                          : `Verse ${idx + 1}`,
-                                      );
-
-                                  newVerses.splice(
-                                    editorPreviewIdx + 1,
-                                    0,
-                                    "Teks lirik baru",
-                                  );
-                                  const tempLabels = [...originalLabels];
-                                  tempLabels.splice(
-                                    editorPreviewIdx + 1,
-                                    0,
-                                    isBible ? "Ayat Baru" : "Verse Baru",
-                                  );
-
-                                  const newLabels = regenerateSlideLabels(
-                                    newVerses,
-                                    tempLabels,
-                                    isBible,
-                                  );
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                    verseLabels: newLabels,
-                                  };
-
-                                  setEditingItem(updatedItem);
-                                  setEditorPreviewIdx(editorPreviewIdx + 1);
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                className="w-full py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-200 border border-sky-400/35 rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer"
-                              >
-                                <Plus className="w-3.5 h-3.5" />
-                                Tambah Baru
-                              </button>
-
-                              <div className="h-px bg-white/[0.07] my-1"></div>
-
-                              {/* Clear Current */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newVerses = [...editingItem.verses];
-                                  newVerses[editorPreviewIdx] = "";
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                  };
-                                  setEditingItem(updatedItem);
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                className="w-full py-2 bg-[#0E1117] hover:bg-white/[0.06] text-amber-300/90 border border-white/[0.08] rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1 cursor-pointer"
-                              >
-                                Hapus Teks Slide
-                              </button>
-
-                              {/* Delete Slide */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (editingItem.verses.length <= 1) return;
-                                  const newVerses = [...editingItem.verses];
-                                  newVerses.splice(editorPreviewIdx, 1);
-
-                                  const isBible =
-                                    editingItem.id?.startsWith("bible-") ||
-                                    editingItem.type === "bible";
-                                  const originalLabels = editingItem.verseLabels
-                                    ? [...editingItem.verseLabels]
-                                    : editingItem.verses.map((_, idx) =>
-                                        isBible
-                                          ? `Ayat ${idx + 1}`
-                                          : `Verse ${idx + 1}`,
-                                      );
-                                  const tempLabels = [...originalLabels];
-                                  if (tempLabels.length > editorPreviewIdx) {
-                                    tempLabels.splice(editorPreviewIdx, 1);
-                                  }
-
-                                  const newLabels = regenerateSlideLabels(
-                                    newVerses,
-                                    tempLabels,
-                                    isBible,
-                                  );
-                                  const updatedItem = {
-                                    ...editingItem,
-                                    verses: newVerses,
-                                    verseLabels: newLabels,
-                                  };
-
-                                  setEditingItem(updatedItem);
-                                  setEditorPreviewIdx(
-                                    Math.max(0, editorPreviewIdx - 1),
-                                  );
-
-                                  if (
-                                    selectedSong &&
-                                    selectedSong.id === updatedItem.id
-                                  ) {
-                                    setSelectedSong(updatedItem as any);
-                                  }
-                                  const newSched = schedule.map((s) =>
-                                    s.id === updatedItem.id ? updatedItem : s,
-                                  );
-                                  setSchedule(newSched);
-                                  localStorage.setItem(
-                                    "cp_last_schedule",
-                                    JSON.stringify(newSched),
-                                  );
-                                }}
-                                disabled={editingItem.verses.length <= 1}
-                                className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 disabled:opacity-30 border border-rose-500/30 rounded-lg font-semibold uppercase tracking-wider transition flex items-center justify-center gap-1 cursor-pointer"
-                              >
-                                <Trash className="w-3.5 h-3.5" />
-                                Hapus Slide
+                                Animasi Teks
                               </button>
                             </div>
+
+                            {/* Speed Selector + Live Canvas Preview Button */}
+                            <div className="flex items-center justify-between gap-2 bg-[#000000] border border-[#27272a] rounded-lg p-1.5">
+                              <div className="flex items-center gap-1">
+                                {(
+                                  [
+                                    { id: "fast", label: "Cepat" },
+                                    { id: "normal", label: "Normal" },
+                                    { id: "slow", label: "Lambat" },
+                                  ] as const
+                                ).map((sp) => (
+                                  <button
+                                    key={sp.id}
+                                    type="button"
+                                    onClick={() => {
+                                      applyAnimationUpdate({
+                                        animationSpeed: sp.id,
+                                      });
+                                      triggerAnimPreview(editorAnimTab, sp.id);
+                                    }}
+                                    className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-colors ${
+                                      (editingItem.animationSpeed || "normal") === sp.id
+                                        ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
+                                        : "text-slate-400 hover:text-slate-100"
+                                    }`}
+                                  >
+                                    {sp.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => triggerAnimPreview("both")}
+                                className="px-2.5 py-1 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded font-black text-[9px] uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors shrink-0"
+                                title="Putar pratinjau animasi slide dan teks di kanvas"
+                              >
+                                <Play className="w-2.5 h-2.5 fill-current" />
+                                Putar
+                              </button>
+                            </div>
+
+                            {/* Active Summary Pill + Scope Info */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[9px] px-2.5 py-1.5 rounded-lg bg-[#09090b] border border-[#27272a] text-slate-300">
+                                <span>
+                                  Slide:{" "}
+                                  <strong className="text-[#f5cc00]">
+                                    {SLIDE_ANIMATION_PRESETS.find(
+                                      (p) =>
+                                        p.id ===
+                                        (editingItem.slideTransition || "fade"),
+                                    )?.label || "Pudar Halus"}
+                                  </strong>
+                                </span>
+                                <span>
+                                  Teks:{" "}
+                                  <strong className="text-[#f5cc00]">
+                                    {TEXT_ANIMATION_PRESETS.find(
+                                      (p) =>
+                                        p.id ===
+                                        (editingItem.textAnimation || "none"),
+                                    )?.label || "Normal (Ikuti Slide)"}
+                                  </strong>
+                                </span>
+                              </div>
+                              <div className="text-[8.5px] font-semibold text-emerald-400/90 px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/25 text-center">
+                                Langsung diterapkan ke seluruh {editingItem.verses.length} slide
+                              </div>
+                            </div>
+
+                            {/* Preset Grid (Clean labels without external app tags) */}
+                            <div className="grid grid-cols-2 gap-1.5 max-h-[340px] overflow-y-auto custom-scrollbar pr-0.5">
+                              {(editorAnimTab === "slide"
+                                ? SLIDE_ANIMATION_PRESETS
+                                : TEXT_ANIMATION_PRESETS
+                              ).map((preset) => {
+                                const currentVal =
+                                  editorAnimTab === "slide"
+                                    ? editingItem.slideTransition || "fade"
+                                    : editingItem.textAnimation || "none";
+                                const isActive = currentVal === preset.id;
+
+                                return (
+                                  <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (editorAnimTab === "slide") {
+                                        applyAnimationUpdate({
+                                          slideTransition: preset.id,
+                                        });
+                                        triggerAnimPreview("slide");
+                                      } else {
+                                        applyAnimationUpdate({
+                                          textAnimation: preset.id,
+                                        });
+                                        triggerAnimPreview("text");
+                                      }
+                                    }}
+                                    className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between gap-1 ${
+                                      isActive
+                                        ? "bg-[#141417] border-[#f5cc00] ring-1 ring-[#f5cc00]/40"
+                                        : "bg-[#000000] border-[#27272a] hover:border-[#cca000]/60 hover:bg-[#09090b]"
+                                    }`}
+                                  >
+                                    <span
+                                      className={`text-[10px] font-bold leading-tight ${
+                                        isActive
+                                          ? "text-[#f5cc00]"
+                                          : "text-slate-100"
+                                      }`}
+                                    >
+                                      {preset.label}
+                                    </span>
+                                    <span className="text-[8.5px] text-slate-400 leading-snug line-clamp-2">
+                                      {preset.description}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                applyAnimationUpdate({
+                                  slideTransition: "fade",
+                                  textAnimation: "none",
+                                  animationSpeed: "normal",
+                                });
+                                triggerAnimPreview("both", "normal");
+                              }}
+                              className="w-full py-1.5 bg-[#09090b] hover:bg-[#141417] text-slate-300 hover:text-[#f5cc00] border border-[#27272a] rounded-lg text-[9.5px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                            >
+                              Reset Animasi ke Default
+                            </button>
                           </div>
                         )}
 
                         {/* E. LOGO OVERLAY PANEL */}
                         {editorActiveMenu === "logo_overlay" && (
                           <div className="flex flex-col gap-3 text-left">
-                            <span className="text-[9px] font-black text-sky-400 uppercase tracking-widest block font-sans">
+                            <span className="text-[9px] font-black text-[#cca000] uppercase tracking-widest block font-sans">
                               Slide Logo Overlay Settings
                             </span>
 
                             {/* Slot Toggle Selector */}
-                            <div className="flex bg-[#080A0E] rounded-lg p-0.5 border border-white/[0.08] text-[10px]">
+                            <div className="flex bg-[#000000] rounded-lg p-0.5 border border-[#27272a] text-[10px]">
                               <button
                                 type="button"
                                 onClick={() => setEditorLogoSlot("left")}
                                 className={`flex-1 py-1.5 rounded-md text-[9px] font-black transition uppercase ${
                                   editorLogoSlot === "left"
-                                    ? "bg-sky-500/25 text-sky-200 border border-sky-400/35"
+                                    ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
                                     : "text-slate-400 hover:text-slate-100"
                                 }`}
                               >
@@ -9371,7 +9512,7 @@ export default function OperatorDashboard() {
                                 onClick={() => setEditorLogoSlot("right")}
                                 className={`flex-1 py-1.5 rounded-md text-[9px] font-black transition uppercase ${
                                   editorLogoSlot === "right"
-                                    ? "bg-sky-500/25 text-sky-200 border border-sky-400/35"
+                                    ? "bg-[#141417] text-[#f5cc00] border border-[#cca000]/65"
                                     : "text-slate-400 hover:text-slate-100"
                                 }`}
                               >
@@ -9380,7 +9521,7 @@ export default function OperatorDashboard() {
                             </div>
 
                             <div className="flex items-center justify-between">
-                              <span className="text-[10px] text-slate-400 font-bold uppercase">
+                              <span className="text-[10px] text-slate-300 font-bold uppercase">
                                 Logo Saat Ini:
                               </span>
                               <div className="flex gap-1.5">
@@ -9416,7 +9557,7 @@ export default function OperatorDashboard() {
                             </div>
 
                             <div className="space-y-1 mt-1">
-                              <span className="text-[9px] text-slate-500 font-bold uppercase block">
+                              <span className="text-[9px] text-slate-400 font-bold uppercase block">
                                 Pilih Gambar Media untuk Logo:
                               </span>
                               {/* Scrollable list of media images */}
@@ -9457,8 +9598,8 @@ export default function OperatorDashboard() {
                                         }}
                                         className={`relative aspect-square rounded-lg overflow-hidden border transition-all hover:scale-105 h-11 w-11 mx-auto ${
                                           isSelected
-                                            ? "border-sky-400 ring-1 ring-sky-400/45 bg-sky-500/15"
-                                            : "border-white/[0.08] opacity-75 hover:opacity-100"
+                                            ? "border-[#f5cc00] ring-1 ring-[#f5cc00]/50 bg-[#141417]"
+                                            : "border-[#27272a] opacity-75 hover:opacity-100"
                                         }`}
                                       >
                                         <img
@@ -9468,7 +9609,7 @@ export default function OperatorDashboard() {
                                           referrerPolicy="no-referrer"
                                         />
                                         {isLeft && (
-                                          <div className="absolute top-0.5 left-0.5 bg-sky-600 text-white text-[7px] px-0.5 rounded-sm font-black uppercase text-center leading-none py-0.5">
+                                          <div className="absolute top-0.5 left-0.5 bg-[#f5cc00] text-[#000000] text-[7px] px-0.5 rounded-sm font-black uppercase text-center leading-none py-0.5">
                                             L
                                           </div>
                                         )}
@@ -9489,13 +9630,13 @@ export default function OperatorDashboard() {
                         {/* F. SCRIPTURE SELECT PANEL */}
                         {editorActiveMenu === "scripture" && (
                           <div className="flex flex-col gap-3 text-left">
-                            <span className="text-[9px] font-black text-sky-400 uppercase tracking-widest block font-sans">
+                            <span className="text-[9px] font-black text-[#cca000] uppercase tracking-widest block font-sans">
                               Pilih Kitab & Cari Ayat
                             </span>
 
                             {/* Version Select */}
                             <div className="space-y-1">
-                              <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block font-sans">
+                              <label className="text-[9px] text-slate-300 font-bold uppercase tracking-wider block font-sans">
                                 Versi Alkitab
                               </label>
                               <select
@@ -9508,7 +9649,7 @@ export default function OperatorDashboard() {
                                     e.target.value,
                                   );
                                 }}
-                                className="w-full text-xs bg-[#080A0E] border border-white/[0.09] text-slate-200 rounded-lg p-1.5 focus:outline-none focus:border-sky-400/50"
+                                className="w-full text-xs bg-[#000000] border border-[#27272a] text-slate-100 rounded-lg p-1.5 focus:outline-none focus:border-[#f5cc00]"
                               >
                                 <option value="tb">
                                   Alkitab Terjemahan Baru (TB)
@@ -9530,7 +9671,7 @@ export default function OperatorDashboard() {
                             {/* Book Selection */}
                             <div className="grid grid-cols-2 gap-2">
                               <div className="space-y-1">
-                                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block font-sans">
+                                <label className="text-[9px] text-slate-300 font-bold uppercase tracking-wider block font-sans">
                                   Kitab
                                 </label>
                                 <select
@@ -9543,7 +9684,7 @@ export default function OperatorDashboard() {
                                       editorScripVersion,
                                     );
                                   }}
-                                  className="w-full text-xs bg-[#080A0E] border border-white/[0.09] text-slate-200 rounded-lg p-1.5 focus:outline-none focus:border-sky-400/50 h-8"
+                                  className="w-full text-xs bg-[#000000] border border-[#27272a] text-slate-100 rounded-lg p-1.5 focus:outline-none focus:border-[#f5cc00] h-8"
                                 >
                                   {getEditorAvailableBooks().map((bookName) => (
                                     <option key={bookName} value={bookName}>
@@ -9554,7 +9695,7 @@ export default function OperatorDashboard() {
                               </div>
 
                               <div className="space-y-1">
-                                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block font-sans">
+                                <label className="text-[9px] text-slate-300 font-bold uppercase tracking-wider block font-sans">
                                   Pasal
                                 </label>
                                 <input
@@ -9573,19 +9714,19 @@ export default function OperatorDashboard() {
                                       editorScripVersion,
                                     );
                                   }}
-                                  className="w-full text-xs bg-[#080A0E] border border-white/[0.09] text-slate-200 rounded-lg p-1.5 focus:outline-none focus:border-sky-400/50 h-8 text-center tabular-nums"
+                                  className="w-full text-xs bg-[#000000] border border-[#27272a] text-slate-100 rounded-lg p-1.5 focus:outline-none focus:border-[#f5cc00] h-8 text-center tabular-nums"
                                 />
                               </div>
                             </div>
 
                             {/* Loading state or verses preview */}
                             <div className="space-y-1">
-                              <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block font-sans">
+                              <label className="text-[9px] text-slate-300 font-bold uppercase tracking-wider block font-sans">
                                 Pratinjau Ayat di Pasal {editorScripChapter}
                               </label>
 
                               {editorIsFetchingScrip ? (
-                                <div className="p-4 bg-[#080A0E] text-center text-slate-400 text-xs rounded-lg border border-white/[0.08] font-bold">
+                                <div className="p-4 bg-[#000000] text-center text-slate-300 text-xs rounded-lg border border-[#27272a] font-bold">
                                   Menghubungkan & Memuat Alkitab...
                                 </div>
                               ) : editorScripError ? (
@@ -9593,12 +9734,12 @@ export default function OperatorDashboard() {
                                   {editorScripError}
                                 </div>
                               ) : editorScripPreviewList.length === 0 ? (
-                                <div className="p-4 bg-[#080A0E] text-center text-slate-500 text-xs rounded-lg border border-white/[0.08] font-bold">
+                                <div className="p-4 bg-[#000000] text-center text-slate-400 text-xs rounded-lg border border-[#27272a] font-bold">
                                   Tidak ada ayat yang termuat. Silakan pilih
                                   Kitab lain.
                                 </div>
                               ) : (
-                                <div className="border border-white/[0.08] rounded-lg bg-[#080A0E] max-h-[160px] overflow-y-auto custom-scrollbar p-1 text-left space-y-1">
+                                <div className="border border-[#27272a] rounded-lg bg-[#000000] max-h-[160px] overflow-y-auto custom-scrollbar p-1 text-left space-y-1">
                                   {editorScripPreviewList.map((v) => {
                                     const isSelected =
                                       v.vNum >= editorScripStartVerse &&
@@ -9626,11 +9767,11 @@ export default function OperatorDashboard() {
                                         }}
                                         className={`w-full text-left p-1.5 rounded text-[10px] leading-tight transition-colors flex gap-1.5 items-start cursor-pointer ${
                                           isSelected
-                                            ? "bg-sky-500/15 text-sky-200 border-l-2 border-sky-400 font-black"
-                                            : "hover:bg-white/[0.05] text-slate-400 font-bold"
+                                            ? "bg-[#141417] text-[#f5cc00] border-l-2 border-[#f5cc00] font-black"
+                                            : "hover:bg-[#141417]/45 text-slate-300 font-bold"
                                         }`}
                                       >
-                                        <span className="font-extrabold text-[9px] text-slate-500 tabular-nums">
+                                        <span className="font-extrabold text-[9px] text-[#cca000] tabular-nums">
                                           {v.vNum}
                                         </span>
                                         <span className="flex-1 text-left">
@@ -9645,9 +9786,9 @@ export default function OperatorDashboard() {
 
                             {/* Range Selection Details */}
                             {editorScripPreviewList.length > 0 && (
-                              <div className="grid grid-cols-2 gap-2 p-2 bg-[#080A0E] rounded-lg border border-white/[0.08] text-[10px]">
+                              <div className="grid grid-cols-2 gap-2 p-2 bg-[#000000] rounded-lg border border-[#27272a] text-[10px]">
                                 <div>
-                                  <span className="text-[8.5px] text-slate-500 uppercase font-bold tracking-wider block mb-1 font-sans">
+                                  <span className="text-[8.5px] text-[#cca000] uppercase font-bold tracking-wider block mb-1 font-sans">
                                     Mulai Ayat
                                   </span>
                                   <select
@@ -9657,7 +9798,7 @@ export default function OperatorDashboard() {
                                         parseInt(e.target.value) || 1,
                                       )
                                     }
-                                    className="w-full text-[10.5px] bg-[#0E1117] border border-white/[0.09] rounded p-1 text-slate-200"
+                                    className="w-full text-[10.5px] bg-[#09090b] border border-[#27272a] rounded p-1 text-slate-100"
                                   >
                                     <option value={0}>- Pilih -</option>
                                     {editorScripPreviewList.map((v) => (
@@ -9668,7 +9809,7 @@ export default function OperatorDashboard() {
                                   </select>
                                 </div>
                                 <div>
-                                  <span className="text-[8.5px] text-slate-500 uppercase font-bold tracking-wider block mb-1 font-sans">
+                                  <span className="text-[8.5px] text-[#cca000] uppercase font-bold tracking-wider block mb-1 font-sans">
                                     Sampai Ayat
                                   </span>
                                   <select
@@ -9678,7 +9819,7 @@ export default function OperatorDashboard() {
                                         parseInt(e.target.value) || 1,
                                       )
                                     }
-                                    className="w-full text-[10.5px] bg-[#0E1117] border border-white/[0.09] rounded p-1 text-slate-200"
+                                    className="w-full text-[10.5px] bg-[#09090b] border border-[#27272a] rounded p-1 text-slate-100"
                                   >
                                     <option value={0}>- Pilih -</option>
                                     {editorScripPreviewList.map((v) => (
@@ -9706,7 +9847,7 @@ export default function OperatorDashboard() {
                                   editorScripEndVerse <= 0
                                 }
                                 onClick={() => insertScriptureToEditor(true)}
-                                className="py-2 bg-white/[0.05] text-slate-200 hover:bg-white/[0.09] border border-white/[0.09] rounded-lg text-[9px] uppercase tracking-wider transition disabled:opacity-40 cursor-pointer"
+                                className="py-2 bg-[#09090b] text-slate-100 hover:bg-[#141417] border border-[#27272a] rounded-lg text-[9px] uppercase tracking-wider transition disabled:opacity-40 cursor-pointer"
                                 title="Sisipkan setiap ayat yang dipilih sebagai slide baru yang berbeda"
                               >
                                 Per Ayat (Slide Terpisah)
@@ -9719,7 +9860,7 @@ export default function OperatorDashboard() {
                                   editorScripEndVerse <= 0
                                 }
                                 onClick={() => insertScriptureToEditor(false)}
-                                className="py-2 bg-sky-600/90 text-white hover:bg-sky-500 rounded-lg text-[9px] uppercase tracking-wider transition disabled:opacity-40 cursor-pointer"
+                                className="py-2 bg-[#f5cc00] text-[#000000] hover:bg-[#ffd60a] rounded-lg text-[9px] uppercase tracking-wider transition disabled:opacity-40 cursor-pointer"
                                 title="Sisipkan semua ayat yang dipilih tergabung dalam satu slide"
                               >
                                 Gabung Satu Slide
@@ -9733,7 +9874,7 @@ export default function OperatorDashboard() {
                 </AnimatePresence>
 
                 {/* B. RIGHT PREVIEW MONITOR AREA: DETAILED HIGH-CONTRAST PREVIEW CANVAS */}
-                <div className="flex-1 bg-[#07080B] flex flex-col items-center justify-between p-4 overflow-hidden relative">
+                <div className="flex-1 bg-[#000000] flex flex-col items-center justify-between p-4 overflow-hidden relative">
                   {/* Subtle vector grid lines background */}
                   <div className="absolute inset-0 opacity-5 pointer-events-none z-0">
                     <div
@@ -9959,11 +10100,12 @@ export default function OperatorDashboard() {
                             ref={previewCanvasRef}
                             className={`slide-canvas-preserve w-full aspect-video bg-black rounded-xl border p-6 flex flex-col shadow-2xl relative overflow-hidden @container select-none ${
                               isEditBgActive
-                                ? "border-sky-400/80 cursor-move ring-2 ring-sky-400/20"
-                                : "border-white/[0.09] cursor-text"
+                                ? "border-[#f5cc00] cursor-move ring-2 ring-[#f5cc00]/25"
+                                : "border-[#27272a] cursor-text"
                             }`}
-                            style={{ containerType: "inline-size" }}
+                            style={{ containerType: "inline-size", perspective: 1200 }}
                             onClick={() => {
+                              setIsAnimPreviewPlaying(false);
                               if (!isEditBgActive) {
                                 editorTextareaRef.current?.focus();
                               }
@@ -9994,7 +10136,32 @@ export default function OperatorDashboard() {
                               }
                             }}
                           >
-                            {/* Floating button on the slide to change or select background image/video */}
+                            {/* Animated Slide Stage Wrapper for Live Transition Previews */}
+                            {(() => {
+                              const stageMotion = getSlideTransitionMotion(
+                                editingItem.slideTransition || "fade",
+                                transitionDuration,
+                                editingItem.animationSpeed || "normal",
+                              );
+                              const shouldAnimateStage =
+                                editorAnimPreviewTick > 0 &&
+                                (editorAnimPreviewMode === "slide" ||
+                                  editorAnimPreviewMode === "both");
+                              return (
+                                <motion.div
+                                  key={
+                                    shouldAnimateStage
+                                      ? `slide-stage-${editorPreviewIdx}-${editorAnimPreviewTick}`
+                                      : `slide-stage-idle-${editorPreviewIdx}`
+                                  }
+                                  initial={
+                                    shouldAnimateStage ? stageMotion.initial : false
+                                  }
+                                  animate={stageMotion.animate}
+                                  transition={stageMotion.transition}
+                                  style={{ perspective: 1200 }}
+                                  className="absolute inset-0 w-full h-full"
+                                >
 
                             {/* Slide Latar Belakang (Render background) */}
                             {bg &&
@@ -10105,7 +10272,7 @@ export default function OperatorDashboard() {
                                         filter: `brightness(${bgBrightnessVal}) blur(${bgBlurVal}px)`,
                                         position: "absolute" as const,
                                         zIndex: 0,
-                                        border: "1.5px dashed rgba(56,189,248,0.85)",
+                                        border: "1.5px dashed rgba(245,204,0,0.9)",
                                         boxShadow: "0 0 12px rgba(0,0,0,0.6)",
                                       }}
                                       className="pointer-events-none select-none"
@@ -10118,66 +10285,66 @@ export default function OperatorDashboard() {
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "tl")
                                         }
-                                        className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Top center */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "tc")
                                         }
-                                        className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Top right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "tr")
                                         }
-                                        className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Middle right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "mr")
                                         }
-                                        className="absolute top-1/2 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute top-1/2 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Bottom right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "br")
                                         }
-                                        className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Bottom center */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "bc")
                                         }
-                                        className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Bottom left */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "bl")
                                         }
-                                        className="absolute bottom-0 left-0 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute bottom-0 left-0 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
                                       {/* Middle left */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleBgMouseDown(e, "scale", "ml")
                                         }
-                                        className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border border-[#07080B] rounded pointer-events-auto cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-md"
+                                        className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border border-[#000000] rounded pointer-events-auto cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-md"
                                       />
 
                                       {/* Rotate stick handler */}
                                       <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-6 flex flex-col items-center">
-                                        <div className="w-0.5 h-3 bg-sky-400" />
+                                        <div className="w-0.5 h-3 bg-[#f5cc00]" />
                                         <div
-                                          className="w-4 h-4 bg-sky-400 border border-[#07080B] rounded-full pointer-events-auto cursor-pointer flex items-center justify-center hover:scale-125 transition-transform shadow-md"
+                                          className="w-4 h-4 bg-[#f5cc00] border border-[#000000] rounded-full pointer-events-auto cursor-pointer flex items-center justify-center hover:scale-125 transition-transform shadow-md"
                                           title="Putar"
                                         >
-                                          <span className="text-[8px] text-[#07080B] font-extrabold">
+                                          <span className="text-[8px] text-[#000000] font-extrabold">
                                             ↻
                                           </span>
                                         </div>
@@ -10302,6 +10469,13 @@ export default function OperatorDashboard() {
                                 paddingBottomCqw = 1.0;
                               }
 
+                              const showTextAnimOverlay =
+                                isAnimPreviewPlaying &&
+                                (editorAnimPreviewMode === "text" ||
+                                  editorAnimPreviewMode === "both") &&
+                                Boolean(editingItem.textAnimation) &&
+                                editingItem.textAnimation !== "none";
+
                               return (
                                 <div
                                   style={{
@@ -10310,6 +10484,7 @@ export default function OperatorDashboard() {
                                     left: `${textLeft}%`,
                                     top: `${textTop}%`,
                                     position: "absolute",
+                                    perspective: 1200,
                                   }}
                                   onMouseDown={(e) => {
                                     // If clicking around the text elements within bounding container, enable drag/pan
@@ -10319,38 +10494,83 @@ export default function OperatorDashboard() {
                                   }}
                                   className={`z-10 flex flex-col p-3 rounded-lg border border-dashed ${
                                     isDraggingTextColumn
-                                      ? "border-sky-400 bg-sky-500/10"
-                                      : "border-sky-400/25 hover:border-sky-400/60 focus-within:border-sky-400/75"
+                                      ? "border-[#f5cc00] bg-[#f5cc00]/10"
+                                      : "border-[#cca000]/35 hover:border-[#f5cc00]/75 focus-within:border-[#f5cc00]"
                                   } hover:bg-white/[0.01] focus-within:bg-black/25 transition-all justify-center ${alignClass}`}
                                 >
-                                  <textarea
-                                    ref={editorTextareaRef}
-                                    value={activeTextVal}
-                                    onChange={(e) => {
-                                      const newVerses = [...editingItem.verses];
-                                      const targetIdx =
-                                        editingItem.verses[editorPreviewIdx] !==
-                                        undefined
-                                          ? editorPreviewIdx
-                                          : 0;
-                                      newVerses[targetIdx] = e.target.value;
-                                      setEditingItem({
-                                        ...editingItem,
-                                        verses: newVerses,
-                                      });
-                                    }}
-                                    placeholder="Klik untuk mengetik lirik langsung di sini..."
-                                    style={{
-                                      ...customStyle,
-                                      textAlign: textAlign as any,
-                                      height: "100%",
-                                      paddingTop: `${paddingTopCqw}cqw`,
-                                      paddingBottom: `${paddingBottomCqw}cqw`,
-                                      boxSizing: "border-box",
-                                    }}
-                                    className={`w-full bg-transparent border-none rounded text-center outline-none resize-none overflow-hidden scrollbar-none transition-all px-2 ${fontClass} ${weightClass} ${italicClass} ${transformClass} ${trackingClass} ${spacingClass}`}
-                                    title="Ketik teks langsung di slide ini"
-                                  />
+                                  <div className="relative w-full h-full">
+                                    <textarea
+                                      ref={editorTextareaRef}
+                                      value={activeTextVal}
+                                      onFocus={() => setIsAnimPreviewPlaying(false)}
+                                      onChange={(e) => {
+                                        const newVerses = [...editingItem.verses];
+                                        const targetIdx =
+                                          editingItem.verses[editorPreviewIdx] !==
+                                          undefined
+                                            ? editorPreviewIdx
+                                            : 0;
+                                        newVerses[targetIdx] = e.target.value;
+                                        setEditingItem({
+                                          ...editingItem,
+                                          verses: newVerses,
+                                        });
+                                      }}
+                                      placeholder="Klik untuk mengetik lirik langsung di sini..."
+                                      style={{
+                                        ...customStyle,
+                                        textAlign: textAlign as any,
+                                        height: "100%",
+                                        paddingTop: `${paddingTopCqw}cqw`,
+                                        paddingBottom: `${paddingBottomCqw}cqw`,
+                                        boxSizing: "border-box",
+                                      }}
+                                      className={`w-full bg-transparent border-none rounded text-center outline-none resize-none overflow-hidden scrollbar-none transition-opacity px-2 ${fontClass} ${weightClass} ${italicClass} ${transformClass} ${trackingClass} ${spacingClass} ${
+                                        showTextAnimOverlay
+                                          ? "opacity-0 pointer-events-none"
+                                          : "opacity-100"
+                                      }`}
+                                      title="Ketik teks langsung di slide ini"
+                                    />
+
+                                    {showTextAnimOverlay && (
+                                      <div
+                                        aria-hidden="true"
+                                        style={{
+                                          ...customStyle,
+                                          textAlign: textAlign as any,
+                                          paddingTop: `${paddingTopCqw}cqw`,
+                                          paddingBottom: `${paddingBottomCqw}cqw`,
+                                          boxSizing: "border-box",
+                                          perspective: 1000,
+                                        }}
+                                        className={`absolute inset-0 w-full h-full px-2 pointer-events-none overflow-hidden whitespace-pre-line ${fontClass} ${weightClass} ${italicClass} ${transformClass} ${trackingClass} ${spacingClass}`}
+                                      >
+                                        {activeTextVal.split("\n").map((line, lineIdx) => {
+                                          const lm = getTextLineMotionVariant(
+                                            editingItem.textAnimation || "none",
+                                            lineIdx,
+                                            Math.max(0.6, transitionDuration),
+                                            editingItem.animationSpeed || "normal",
+                                          );
+                                          return (
+                                            <motion.span
+                                              key={`ta-${editorAnimPreviewTick}-${lineIdx}`}
+                                              initial={lm ? lm.initial : false}
+                                              animate={lm ? lm.animate : undefined}
+                                              transition={lm ? lm.transition : undefined}
+                                              style={{
+                                                display: "block",
+                                                transformOrigin: "center bottom",
+                                              }}
+                                            >
+                                              {line || "\u00A0"}
+                                            </motion.span>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
 
                                   {/* 8 precision resize anchors */}
                                   {!isEditBgActive && (
@@ -10360,56 +10580,56 @@ export default function OperatorDashboard() {
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "tl")
                                         }
-                                        className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Top center */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "tc")
                                         }
-                                        className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Top right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "tr")
                                         }
-                                        className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Middle right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "mr")
                                         }
-                                        className="absolute top-1/2 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute top-1/2 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Bottom right */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "br")
                                         }
-                                        className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-nwse-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Bottom center */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "bc")
                                         }
-                                        className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-ns-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Bottom left */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "bl")
                                         }
-                                        className="absolute bottom-0 left-0 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute bottom-0 left-0 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-nesw-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                       {/* Middle left */}
                                       <div
                                         onMouseDown={(e) =>
                                           handleTextMouseDown(e, "resize", "ml")
                                         }
-                                        className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-sky-400 border-2 border-[#07080B] rounded-full cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-lg"
+                                        className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-[#f5cc00] border-2 border-[#000000] rounded-full cursor-ew-resize hover:scale-125 transition-transform z-50 shadow-lg"
                                       />
                                     </>
                                   )}
@@ -10430,19 +10650,22 @@ export default function OperatorDashboard() {
                                   </p>
                                 )}
                             </div>
+                                </motion.div>
+                              );
+                            })()}
 
                             {/* Floating overlay HUD indicators for direct drag-and-drop interactivity */}
                             {isEditBgActive && (
-                              <div className="absolute top-3.5 right-3.5 z-50 flex items-center gap-1.5 bg-[#0C0E12]/90 backdrop-blur-md border border-white/[0.1] rounded-lg px-2.5 py-1.5 text-[10px] text-slate-300 font-sans shadow-2xl select-none">
+                              <div className="absolute top-3.5 right-3.5 z-50 flex items-center gap-1.5 bg-[#09090b]/95 backdrop-blur-md border border-[#27272a] rounded-lg px-2.5 py-1.5 text-[10px] text-slate-200 font-sans shadow-2xl select-none">
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full ${isDraggingBg ? "bg-emerald-400" : "bg-sky-400"}`}
+                                  className={`w-1.5 h-1.5 rounded-full ${isDraggingBg ? "bg-emerald-400" : "bg-[#f5cc00]"}`}
                                 />
                                 <span className="font-extrabold text-[9px] uppercase text-slate-100 tracking-wider">
                                   {editorActiveMenu === "gambar_bg"
                                     ? "GAMBAR HUD"
                                     : "VIDEO HUD"}
                                 </span>
-                                <span className="text-[8.5px] font-mono text-slate-400 tabular-nums">
+                                <span className="text-[8.5px] font-mono text-[#cca000] tabular-nums">
                                   X:
                                   {editingItem.bgPositionX !== undefined
                                     ? editingItem.bgPositionX
@@ -10470,7 +10693,7 @@ export default function OperatorDashboard() {
                                       bgFit: "cover",
                                     });
                                   }}
-                                  className="ml-2 px-1.5 py-0.5 bg-white/[0.08] hover:bg-white/[0.14] rounded text-[8px] font-black uppercase text-slate-200 hover:text-white transition-all cursor-pointer"
+                                  className="ml-2 px-1.5 py-0.5 bg-[#141417] hover:bg-[#cca000] rounded text-[8px] font-black uppercase text-slate-100 hover:text-[#000000] transition-all cursor-pointer"
                                   title="Reset Posisi & Zoom"
                                 >
                                   Reset
@@ -10480,9 +10703,9 @@ export default function OperatorDashboard() {
 
                             {/* Center drag crosshair indicator on-drag */}
                             {isDraggingBg && (
-                              <div className="absolute inset-0 z-40 bg-sky-500/5 pointer-events-none border border-sky-400/25 flex items-center justify-center">
-                                <div className="w-10 h-10 border border-sky-400/30 rounded-full flex items-center justify-center">
-                                  <div className="w-2 h-2 bg-sky-400 rounded-full" />
+                              <div className="absolute inset-0 z-40 bg-[#f5cc00]/5 pointer-events-none border border-[#f5cc00]/30 flex items-center justify-center">
+                                <div className="w-10 h-10 border border-[#f5cc00]/40 rounded-full flex items-center justify-center">
+                                  <div className="w-2 h-2 bg-[#f5cc00] rounded-full" />
                                 </div>
                               </div>
                             )}
@@ -10495,8 +10718,8 @@ export default function OperatorDashboard() {
                   </div>
 
                   {/* BOTTOM ZOOM BAR CONTROLS */}
-                  <div className="w-full flex items-center justify-between px-4 py-2 bg-[#0C0E12] border border-white/[0.08] rounded-xl text-slate-400 select-none text-[11px] font-bold">
-                    <span className="text-slate-300 tabular-nums">Zoom: {editorZoom}%</span>
+                  <div className="w-full flex items-center justify-between px-4 py-2 bg-[#09090b] border border-[#27272a] rounded-xl text-slate-300 select-none text-[11px] font-bold">
+                    <span className="text-[#f5cc00] tabular-nums">Zoom: {editorZoom}%</span>
                     <div className="flex items-center gap-3 w-1/2">
                       <input
                         type="range"
@@ -10506,13 +10729,13 @@ export default function OperatorDashboard() {
                         onChange={(e) =>
                           setEditorZoom(parseInt(e.target.value))
                         }
-                        className="flex-1 h-1 bg-[#080A0E] rounded appearance-none cursor-pointer accent-sky-400"
+                        className="flex-1 h-1 bg-[#000000] rounded appearance-none cursor-pointer accent-[#f5cc00]"
                         title="Slide preview zoom"
                       />
                       <button
                         type="button"
                         onClick={() => setEditorZoom(63)}
-                        className="px-2.5 py-0.5 bg-white/[0.05] hover:bg-white/[0.1] text-[10px] text-slate-300 hover:text-white rounded-md border border-white/[0.08] transition-colors"
+                        className="px-2.5 py-0.5 bg-[#000000] hover:bg-[#141417] text-[10px] text-slate-200 hover:text-[#f5cc00] rounded-md border border-[#27272a] transition-colors"
                       >
                         Reset (63%)
                       </button>
@@ -10522,13 +10745,20 @@ export default function OperatorDashboard() {
               </div>
 
               {/* 4. BOTTOM ACTION CONTROL BANNER */}
-              <div className="px-5 py-3 border-t border-white/[0.08] bg-[#0B0D11] flex justify-end items-center gap-3 select-none shrink-0">
+              <div className="px-5 py-3 border-t border-[#27272a] bg-[#09090b] flex justify-end items-center gap-3 select-none shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     // APPLY: Save current modifications, but leave editor modal open
+                    const matchesEditedId = (targetId?: string, targetSongId?: string) =>
+                      targetId === editingItem.id ||
+                      targetSongId === editingItem.id ||
+                      (Boolean(editingItem.songId) &&
+                        (targetId === editingItem.songId ||
+                          targetSongId === editingItem.songId));
+
                     const newSchedule = schedule.map((s) =>
-                      s.id === editingItem.id ? editingItem : s,
+                      matchesEditedId(s.id, s.songId) ? { ...s, ...editingItem, id: s.id } : s,
                     );
                     setSchedule(newSchedule);
                     localStorage.setItem(
@@ -10537,20 +10767,22 @@ export default function OperatorDashboard() {
                     );
 
                     if (editingItem.type === "song") {
+                      const targetSongKey = editingItem.songId || editingItem.id;
                       const exists = librarySongs.some(
-                        (ls) => ls.id === editingItem.id,
+                        (ls) => ls.id === editingItem.id || ls.id === targetSongKey,
                       );
                       let updatedSongsList = [];
                       if (exists) {
                         updatedSongsList = librarySongs.map((ls) =>
-                          ls.id === editingItem.id
-                            ? { ...ls, ...editingItem, updatedAt: Date.now() }
+                          ls.id === editingItem.id || ls.id === targetSongKey
+                            ? { ...ls, ...editingItem, id: ls.id, updatedAt: Date.now() }
                             : ls,
                         );
                       } else {
                         updatedSongsList = [
                           {
                             ...editingItem,
+                            id: targetSongKey,
                             artist: editingItem.artist || "Manual Entry",
                             updatedAt: Date.now(),
                           } as any,
@@ -10561,14 +10793,21 @@ export default function OperatorDashboard() {
                       savePersistentSongs(currentAccountId, updatedSongsList);
                       syncSongsToBackend(updatedSongsList);
                     }
-                    if (selectedSong?.id === editingItem.id)
-                      setSelectedSong(editingItem as any);
+
+                    setLibraryPresentations((prev) =>
+                      prev.map((lp) =>
+                        matchesEditedId(lp.id) ? { ...lp, ...editingItem, id: lp.id } : lp,
+                      ),
+                    );
+
+                    if (selectedSong && matchesEditedId(selectedSong.id))
+                      setSelectedSong({ ...selectedSong, ...editingItem, id: selectedSong.id } as any);
 
                     const isBibleEditing =
                       editingItem.id?.startsWith("bible-") ||
                       editingItem.type === "bible";
 
-                    if (previewSlide?.parentId === editingItem.id) {
+                    if (previewSlide && matchesEditedId(previewSlide.parentId)) {
                       const targetIdx =
                         previewSlide.slideIdx !== undefined &&
                         previewSlide.slideIdx < editingItem.verses.length
@@ -10593,7 +10832,7 @@ export default function OperatorDashboard() {
                     }
                     if (
                       currentSlide &&
-                      currentSlide.parentId === editingItem.id
+                      matchesEditedId(currentSlide.parentId)
                     ) {
                       const targetIdx =
                         currentSlide.slideIdx !== undefined &&
@@ -10622,7 +10861,7 @@ export default function OperatorDashboard() {
                       "success",
                     );
                   }}
-                  className="px-5 py-1.5 text-[11px] font-bold bg-white/[0.06] hover:bg-white/[0.11] text-slate-200 hover:text-white border border-white/[0.09] rounded-lg transition-colors cursor-pointer"
+                  className="px-5 py-1.5 text-[11px] font-bold bg-[#000000] hover:bg-[#141417] text-slate-200 hover:text-[#f5cc00] border border-[#27272a] rounded-lg transition-colors cursor-pointer"
                 >
                   Apply
                 </button>
@@ -10630,8 +10869,15 @@ export default function OperatorDashboard() {
                   type="button"
                   onClick={() => {
                     // OK: Save & Exit
+                    const matchesEditedId = (targetId?: string, targetSongId?: string) =>
+                      targetId === editingItem.id ||
+                      targetSongId === editingItem.id ||
+                      (Boolean(editingItem.songId) &&
+                        (targetId === editingItem.songId ||
+                          targetSongId === editingItem.songId));
+
                     const newSchedule = schedule.map((s) =>
-                      s.id === editingItem.id ? editingItem : s,
+                      matchesEditedId(s.id, s.songId) ? { ...s, ...editingItem, id: s.id } : s,
                     );
                     setSchedule(newSchedule);
                     localStorage.setItem(
@@ -10640,20 +10886,22 @@ export default function OperatorDashboard() {
                     );
 
                     if (editingItem.type === "song") {
+                      const targetSongKey = editingItem.songId || editingItem.id;
                       const exists = librarySongs.some(
-                        (ls) => ls.id === editingItem.id,
+                        (ls) => ls.id === editingItem.id || ls.id === targetSongKey,
                       );
                       let updatedSongsList = [];
                       if (exists) {
                         updatedSongsList = librarySongs.map((ls) =>
-                          ls.id === editingItem.id
-                            ? { ...ls, ...editingItem, updatedAt: Date.now() }
+                          ls.id === editingItem.id || ls.id === targetSongKey
+                            ? { ...ls, ...editingItem, id: ls.id, updatedAt: Date.now() }
                             : ls,
                         );
                       } else {
                         updatedSongsList = [
                           {
                             ...editingItem,
+                            id: targetSongKey,
                             artist: editingItem.artist || "Manual Entry",
                             updatedAt: Date.now(),
                           } as any,
@@ -10664,14 +10912,21 @@ export default function OperatorDashboard() {
                       savePersistentSongs(currentAccountId, updatedSongsList);
                       syncSongsToBackend(updatedSongsList);
                     }
-                    if (selectedSong?.id === editingItem.id)
-                      setSelectedSong(editingItem as any);
+
+                    setLibraryPresentations((prev) =>
+                      prev.map((lp) =>
+                        matchesEditedId(lp.id) ? { ...lp, ...editingItem, id: lp.id } : lp,
+                      ),
+                    );
+
+                    if (selectedSong && matchesEditedId(selectedSong.id))
+                      setSelectedSong({ ...selectedSong, ...editingItem, id: selectedSong.id } as any);
 
                     const isBibleEditing =
                       editingItem.id?.startsWith("bible-") ||
                       editingItem.type === "bible";
 
-                    if (previewSlide?.parentId === editingItem.id) {
+                    if (previewSlide && matchesEditedId(previewSlide.parentId)) {
                       const targetIdx =
                         previewSlide.slideIdx !== undefined &&
                         previewSlide.slideIdx < editingItem.verses.length
@@ -10696,7 +10951,7 @@ export default function OperatorDashboard() {
                     }
                     if (
                       currentSlide &&
-                      currentSlide.parentId === editingItem.id
+                      matchesEditedId(currentSlide.parentId)
                     ) {
                       const targetIdx =
                         currentSlide.slideIdx !== undefined &&
@@ -10723,7 +10978,7 @@ export default function OperatorDashboard() {
                     showToast("Perubahan disimpan secara permanen!", "success");
                     setEditingItem(null);
                   }}
-                  className="px-6 py-1.5 text-[11px] font-bold bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg transition-colors cursor-pointer"
+                  className="px-6 py-1.5 text-[11px] font-black bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg transition-colors cursor-pointer"
                 >
                   OK
                 </button>
@@ -10736,7 +10991,7 @@ export default function OperatorDashboard() {
                     );
                     setEditingItem(null);
                   }}
-                  className="px-5 py-1.5 text-[11px] font-bold bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 hover:text-white rounded-lg transition-colors border border-white/[0.08] cursor-pointer"
+                  className="px-5 py-1.5 text-[11px] font-bold bg-[#000000] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg transition-colors border border-[#27272a] cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -10764,7 +11019,7 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
             >
               <div className="mb-6 flex flex-col items-center">
                 <div className="p-4 bg-white rounded-xl mb-4 shadow-lg">
@@ -10777,14 +11032,14 @@ export default function OperatorDashboard() {
                   Scan QR code ini untuk melihat slide langsung di handphone
                 </p>
               </div>
-              <div className="bg-[#080A0E] p-3 rounded-lg border border-white/[0.08] mb-6 select-all cursor-copy">
-                <p className="text-[10px] font-mono text-sky-400 break-all">
+              <div className="bg-[#000000] p-3 rounded-lg border border-[#27272a] mb-6 select-all cursor-copy">
+                <p className="text-[10px] font-mono text-[#f5cc00] break-all">
                   {projectorUrl}
                 </p>
               </div>
               <button
                 onClick={() => setShowShareModal(false)}
-                className="w-full py-3 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg font-bold text-xs uppercase tracking-widest transition-all"
+                className="w-full py-3 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg font-black text-xs uppercase tracking-widest transition-all"
               >
                 Close Window
               </button>
@@ -10809,30 +11064,30 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
             >
               <h3 className="text-lg font-black text-slate-100 uppercase tracking-tight mb-2">
                 Save Project File
               </h3>
               <p className="text-xs text-slate-400 mb-6 font-medium">
                 Simpan seluruh susunan acara/jadwal aktif ke dalam file
-                presentasi <code className="text-sky-400">.chr</code>
+                presentasi <code className="text-[#f5cc00]">.chr</code>
               </p>
 
               {/* Dynamic Card showcasing the App Logo inside the CHR file representation */}
-              <div className="border border-white/[0.08] p-6 rounded-2xl bg-[#080A0E] relative flex flex-col items-center mb-6 group transition-all hover:border-white/[0.14]">
-                <span className="absolute top-2.5 right-2.5 px-2 py-0.5 bg-sky-500/10 border border-sky-400/25 text-[8px] font-black text-sky-300 rounded-full uppercase tracking-widest">
+              <div className="border border-[#27272a] p-6 rounded-2xl bg-[#000000] relative flex flex-col items-center mb-6 group transition-all hover:border-[#cca000]/55">
+                <span className="absolute top-2.5 right-2.5 px-2 py-0.5 bg-[#141417] border border-[#cca000]/40 text-[8px] font-black text-[#f5cc00] rounded-full uppercase tracking-widest">
                   .CHR App File
                 </span>
 
                 {/* Visual File Icon with AppLogo! */}
-                <div className="w-16 h-16 bg-[#0E1117] rounded-2xl flex items-center justify-center border border-white/[0.09] group-hover:border-sky-400/40 shadow-xl transition-all relative">
+                <div className="w-16 h-16 bg-[#09090b] rounded-2xl flex items-center justify-center border border-[#27272a] group-hover:border-[#cca000]/65 shadow-xl transition-all relative">
                   <AppLogo
                     className="w-12 h-12"
                     bgWhiteSquare={true}
                     showText={false}
                   />
-                  <span className="absolute -bottom-1 -right-1 bg-sky-600 border border-sky-400/30 text-white text-[7px] px-1.5 py-0.5 font-black uppercase tracking-widest rounded-md shadow-md">
+                  <span className="absolute -bottom-1 -right-1 bg-[#f5cc00] border border-[#cca000] text-[#000000] text-[7px] px-1.5 py-0.5 font-black uppercase tracking-widest rounded-md shadow-md">
                     CHR
                   </span>
                 </div>
@@ -10844,7 +11099,7 @@ export default function OperatorDashboard() {
                       : `${saveFileName}.chr`
                     : "jadwal_ibadah.chr"}
                 </h4>
-                <p className="text-[9px] font-bold mt-1 bg-sky-500/10 text-sky-300 border border-sky-400/25 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
+                <p className="text-[9px] font-bold mt-1 bg-[#141417] text-[#f5cc00] border border-[#cca000]/35 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
                   Logo aplikasi disematkan dalam berkas (.chr)
                 </p>
                 <p className="text-[9px] text-slate-500 font-mono mt-1 tabular-nums">
@@ -10854,7 +11109,7 @@ export default function OperatorDashboard() {
 
               {/* Input field */}
               <div className="text-left space-y-2 mb-6">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">
+                <label className="text-[9px] font-black text-[#cca000] uppercase tracking-widest block">
                   Nama File
                 </label>
                 <div className="relative">
@@ -10867,7 +11122,7 @@ export default function OperatorDashboard() {
                       )
                     }
                     placeholder="nama_file"
-                    className="w-full bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none transition-colors"
+                    className="w-full bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none transition-colors"
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-black">
                     .chr
@@ -10878,7 +11133,7 @@ export default function OperatorDashboard() {
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowSaveModal(false)}
-                  className="flex-1 py-2.5 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-xs font-black uppercase tracking-widest transition-all"
+                  className="flex-1 py-2.5 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-widest transition-all"
                 >
                   Batal
                 </button>
@@ -10936,7 +11191,7 @@ export default function OperatorDashboard() {
                       "success",
                     );
                   }}
-                  className="flex-1 py-2.5 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg text-xs font-black uppercase tracking-widest transition-all"
+                  className="flex-1 py-2.5 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-xs font-black uppercase tracking-widest transition-all"
                 >
                   Download File
                 </button>
@@ -10962,7 +11217,7 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
             >
               <h3 className="text-xl font-black text-slate-100 uppercase tracking-tighter mb-4">
                 Simpan Jadwal Presentasi
@@ -10976,7 +11231,7 @@ export default function OperatorDashboard() {
                 value={presentationName}
                 onChange={(e) => setPresentationName(e.target.value)}
                 placeholder="Nama Presentasi"
-                className="w-full bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 rounded-lg px-3 py-2 text-slate-100 mb-4 text-sm outline-none"
+                className="w-full bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] rounded-lg px-3 py-2 text-slate-100 mb-4 text-sm outline-none"
               />
               <button
                 onClick={() => {
@@ -11006,13 +11261,13 @@ export default function OperatorDashboard() {
                   showToast("Presentasi berhasil disimpan!", "success");
                   setActiveTab("presentations");
                 }}
-                className="w-full py-3 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg font-bold text-xs uppercase tracking-widest transition-all mb-3"
+                className="w-full py-3 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg font-black text-xs uppercase tracking-widest transition-all mb-3"
               >
                 Simpan
               </button>
               <button
                 onClick={() => setShowPresentationModal(false)}
-                className="w-full py-3 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 rounded-lg font-bold text-xs uppercase tracking-widest transition-all"
+                className="w-full py-3 bg-[#000000] hover:bg-[#141417] border border-[#27272a] text-slate-300 hover:text-white rounded-lg font-bold text-xs uppercase tracking-widest transition-all"
               >
                 Batal
               </button>
@@ -11037,13 +11292,13 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-md w-full text-center"
             >
               <h3 className="text-lg font-black text-slate-100 uppercase tracking-tight mb-2">
                 Open Project File
               </h3>
               <p className="text-xs text-slate-400 mb-6 font-medium">
-                Unggah file jadwal <code className="text-sky-400 font-bold">.chr</code>, presentasi <code className="text-sky-400 font-bold">.pptx</code>, atau jadwal EasyWorship <code className="text-sky-400 font-bold">.ewsx</code> Anda.
+                Unggah file jadwal <code className="text-[#f5cc00] font-bold">.chr</code>, presentasi <code className="text-[#f5cc00] font-bold">.pptx</code>, atau jadwal EasyWorship <code className="text-[#f5cc00] font-bold">.ewsx</code> Anda.
               </p>
 
               {/* Upload Drop Zone, decorated with folder indicator and AppLogo! */}
@@ -11072,11 +11327,11 @@ export default function OperatorDashboard() {
                     document.getElementById("chr-file-selector")?.click();
                   }
                 }}
-                className="border border-dashed border-white/[0.15] hover:border-sky-400/50 p-8 rounded-2xl bg-[#080A0E] flex flex-col items-center justify-center cursor-pointer transition-all group mb-6 min-h-[220px]"
+                className="border border-dashed border-[#27272a] hover:border-[#cca000] p-8 rounded-2xl bg-[#000000] flex flex-col items-center justify-center cursor-pointer transition-all group mb-6 min-h-[220px]"
               >
                 {isUploadingSchedule ? (
                   <div className="flex flex-col items-center justify-center py-4">
-                    <div className="w-10 h-10 border-4 border-sky-400/20 border-t-sky-400 rounded-full animate-spin mb-4" />
+                    <div className="w-10 h-10 border-4 border-[#cca000]/25 border-t-[#f5cc00] rounded-full animate-spin mb-4" />
                     <h4 className="text-xs font-bold text-slate-200">
                       Sedang Membuka File...
                     </h4>
@@ -11088,20 +11343,20 @@ export default function OperatorDashboard() {
                   <>
                     {/* Logo and Icon overlap decoration */}
                     <div className="w-16 h-16 mb-4 relative flex items-center justify-center">
-                      <div className="absolute inset-0 bg-sky-500/5 rounded-full filter blur-md p-6 group-hover:bg-sky-500/10 transition-colors" />
-                      <div className="w-14 h-14 bg-[#0E1117] rounded-2xl flex items-center justify-center border border-white/[0.09] group-hover:border-sky-400/40 group-hover:scale-105 transition-all">
+                      <div className="absolute inset-0 bg-[#f5cc00]/5 rounded-full filter blur-md p-6 group-hover:bg-[#f5cc00]/10 transition-colors" />
+                      <div className="w-14 h-14 bg-[#09090b] rounded-2xl flex items-center justify-center border border-[#27272a] group-hover:border-[#cca000] group-hover:scale-105 transition-all">
                         <AppLogo
                           className="w-10 h-10 opacity-75 group-hover:opacity-100 transition-opacity"
                           bgWhiteSquare={true}
                           showText={false}
                         />
                       </div>
-                      <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-sky-600 rounded-lg flex items-center justify-center border border-white/10 shadow-md">
-                        <FolderOpen className="w-3.5 h-3.5 text-white" />
+                      <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-[#f5cc00] rounded-lg flex items-center justify-center border border-[#cca000] shadow-md">
+                        <FolderOpen className="w-3.5 h-3.5 text-[#000000]" />
                       </div>
                     </div>
 
-                    <h4 className="text-xs font-bold text-slate-200 group-hover:text-sky-300 transition-colors">
+                    <h4 className="text-xs font-bold text-slate-200 group-hover:text-[#f5cc00] transition-colors">
                       Pilih atau Taruh File Project
                     </h4>
                     <p className="text-[10px] text-slate-500 mt-1 leading-normal max-w-[220px] text-center">
@@ -11133,7 +11388,7 @@ export default function OperatorDashboard() {
                     setShowOpenModal(false);
                   }}
                   disabled={isUploadingSchedule}
-                  className="px-6 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-xs font-black uppercase tracking-widest transition-all disabled:opacity-50"
+                  className="px-6 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-widest transition-all disabled:opacity-50"
                 >
                   Batal
                 </button>
@@ -11154,7 +11409,7 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-rose-500/25 p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
+              className="relative bg-[#09090b] border border-rose-500/35 p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
             >
               <div className="flex flex-col items-center mb-4">
                 <div className="p-3 bg-rose-500/10 rounded-full text-rose-400 mb-3 border border-rose-500/20">
@@ -11176,7 +11431,7 @@ export default function OperatorDashboard() {
               <div className="flex gap-2 justify-center mt-6">
                 <button
                   onClick={() => setSongToDelete(null)}
-                  className="px-4 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex-1"
+                  className="px-4 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex-1"
                 >
                   Batal
                 </button>
@@ -11203,7 +11458,7 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-rose-500/25 p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
+              className="relative bg-[#09090b] border border-rose-500/35 p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-sm w-full text-center"
             >
               <div className="flex flex-col items-center mb-4">
                 <div className="p-3 bg-rose-500/10 rounded-full text-rose-400 mb-3 border border-rose-500/20">
@@ -11225,7 +11480,7 @@ export default function OperatorDashboard() {
               <div className="flex gap-2 justify-center mt-6">
                 <button
                   onClick={() => setBatchSongsToDelete(null)}
-                  className="px-4 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex-1"
+                  className="px-4 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex-1"
                 >
                   Batal
                 </button>
@@ -11252,11 +11507,11 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
             >
               <div className="flex justify-between items-center mb-6">
                 <div className="flex items-center gap-2.5">
-                  <Settings className="w-5 h-5 text-sky-400" />
+                  <Settings className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-slate-100 uppercase tracking-tight">
                       System Settings
@@ -11269,7 +11524,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowSettingsModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.08] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -11277,12 +11532,12 @@ export default function OperatorDashboard() {
 
               <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
                 {/* Section 1: Slide Progression & Transitions */}
-                <div className="space-y-4 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl">
-                  <h4 className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                    <Sliders className="w-3.5 h-3.5 text-sky-400" /> Kecepatan
+                <div className="space-y-4 bg-[#000000] border border-[#27272a] p-4 rounded-xl">
+                  <h4 className="text-xs font-black text-[#cca000] uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                    <Sliders className="w-3.5 h-3.5 text-[#f5cc00]" /> Kecepatan
                     & Transisi Slide
                   </h4>
-                  <div className="h-px bg-white/[0.07]" />
+                  <div className="h-px bg-[#141417]" />
 
                   {/* Slide Auto-Play Timer Interval */}
                   <div className="space-y-2">
@@ -11290,7 +11545,7 @@ export default function OperatorDashboard() {
                       <span className="text-slate-300 font-medium">
                         Interval Auto-Play (Kecepatan Slide)
                       </span>
-                      <span className="text-sky-400 font-bold font-mono tabular-nums">
+                      <span className="text-[#f5cc00] font-bold font-mono tabular-nums">
                         {slideSpeed} Detik
                       </span>
                     </div>
@@ -11308,7 +11563,7 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="flex-1 accent-sky-400 bg-[#12161F] h-1.5 rounded-lg cursor-pointer"
+                        className="flex-1 accent-[#f5cc00] bg-[#09090b] h-1.5 rounded-lg cursor-pointer"
                       />
                       <input
                         type="number"
@@ -11326,7 +11581,7 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="w-14 bg-[#0C0E12] border border-white/[0.09] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums"
+                        className="w-14 bg-[#09090b] border border-[#27272a] focus:border-[#f5cc00] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums outline-none"
                       />
                     </div>
                     <p className="text-[9px] text-slate-500 leading-normal">
@@ -11341,7 +11596,7 @@ export default function OperatorDashboard() {
                       <span className="text-slate-300 font-medium">
                         Durasi Transisi Slide (Fade/Zoom/Slide)
                       </span>
-                      <span className="text-sky-400 font-bold font-mono tabular-nums">
+                      <span className="text-[#f5cc00] font-bold font-mono tabular-nums">
                         {transitionDuration} Detik
                       </span>
                     </div>
@@ -11360,7 +11615,7 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="flex-1 accent-sky-400 bg-[#12161F] h-1.5 rounded-lg cursor-pointer"
+                        className="flex-1 accent-[#f5cc00] bg-[#09090b] h-1.5 rounded-lg cursor-pointer"
                       />
                       <input
                         type="number"
@@ -11379,7 +11634,7 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="w-14 bg-[#0C0E12] border border-white/[0.09] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums"
+                        className="w-14 bg-[#09090b] border border-[#27272a] focus:border-[#f5cc00] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums outline-none"
                       />
                     </div>
                     <p className="text-[9px] text-slate-500 leading-normal">
@@ -11390,12 +11645,12 @@ export default function OperatorDashboard() {
                 </div>
 
                 {/* Section 2: Output Setup */}
-                <div className="space-y-4 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl">
-                  <h4 className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                    <Monitor className="w-3.5 h-3.5 text-sky-400" /> Pengaturan
+                <div className="space-y-4 bg-[#000000] border border-[#27272a] p-4 rounded-xl">
+                  <h4 className="text-xs font-black text-[#cca000] uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                    <Monitor className="w-3.5 h-3.5 text-[#f5cc00]" /> Pengaturan
                     Output & Tampilan
                   </h4>
-                  <div className="h-px bg-white/[0.07]" />
+                  <div className="h-px bg-[#141417]" />
 
                   {/* App Appearance Theme (Dark / Light) */}
                   <div className="space-y-2">
@@ -11411,15 +11666,15 @@ export default function OperatorDashboard() {
                         }}
                         className={`py-2.5 px-4 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-1 relative overflow-hidden border cursor-pointer ${
                           uiTheme === "dark"
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-300 hover:text-white hover:bg-[#141417]/60"
                         }`}
                       >
                         <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider">
-                          <Moon className="w-3.5 h-3.5 text-sky-400" />
+                          <Moon className="w-3.5 h-3.5 text-[#f5cc00]" />
                           Mode Gelap
                         </span>
-                        <span className="text-[9px] font-medium opacity-70 font-sans">
+                        <span className="text-[9px] font-medium opacity-75 font-sans">
                           Gelap futuristik &amp; minim silau
                         </span>
                       </button>
@@ -11431,15 +11686,15 @@ export default function OperatorDashboard() {
                         }}
                         className={`py-2.5 px-4 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-1 relative overflow-hidden border cursor-pointer ${
                           uiTheme === "light"
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-300 hover:text-white hover:bg-[#141417]/60"
                         }`}
                       >
                         <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider">
-                          <Sun className="w-3.5 h-3.5 text-sky-400" />
+                          <Sun className="w-3.5 h-3.5 text-[#f5cc00]" />
                           Mode Terang
                         </span>
-                        <span className="text-[9px] font-medium opacity-70 font-sans">
+                        <span className="text-[9px] font-medium opacity-75 font-sans">
                           Terang bersih &amp; nyaman di mata
                         </span>
                       </button>
@@ -11465,12 +11720,12 @@ export default function OperatorDashboard() {
                         }}
                         className={`py-2 px-4 rounded-lg text-xs font-bold transition-all uppercase flex flex-col items-center gap-1 relative overflow-hidden border ${
                           outputResolution === "16:9"
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-300 hover:text-white hover:bg-[#141417]/60"
                         }`}
                       >
                         <span className="text-sm font-black">16:9</span>
-                        <span className="text-[9px] font-medium opacity-60 font-sans">
+                        <span className="text-[9px] font-medium opacity-70 font-sans">
                           Layar Lebar (Widescreen)
                         </span>
                       </button>
@@ -11484,12 +11739,12 @@ export default function OperatorDashboard() {
                         }}
                         className={`py-2 px-4 rounded-lg text-xs font-bold transition-all uppercase flex flex-col items-center gap-1 relative overflow-hidden border ${
                           outputResolution === "4:3"
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-300 hover:text-white hover:bg-[#141417]/60"
                         }`}
                       >
                         <span className="text-sm font-black">4:3</span>
-                        <span className="text-[9px] font-medium opacity-60 font-sans">
+                        <span className="text-[9px] font-medium opacity-70 font-sans">
                           Layar Standar (Box / CRT)
                         </span>
                       </button>
@@ -11520,23 +11775,23 @@ export default function OperatorDashboard() {
                           val.toString(),
                         );
                       }}
-                      className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-all ${showLogoOnClear ? "bg-sky-600 justify-end" : "bg-white/[0.1] justify-start"}`}
+                      className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-all ${showLogoOnClear ? "bg-[#f5cc00] justify-end" : "bg-[#141417] justify-start"}`}
                     >
                       <motion.div
                         layout
-                        className="w-4 h-4 rounded-full bg-white shadow-md"
+                        className={`w-4 h-4 rounded-full shadow-md ${showLogoOnClear ? "bg-[#000000]" : "bg-white"}`}
                       />
                     </button>
                   </div>
                 </div>
 
                 {/* Section 3: Global Text Style Override */}
-                <div className="space-y-4 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl">
-                  <h4 className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                    <Layers className="w-3.5 h-3.5 text-sky-400" /> Override
+                <div className="space-y-4 bg-[#000000] border border-[#27272a] p-4 rounded-xl">
+                  <h4 className="text-xs font-black text-[#cca000] uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                    <Layers className="w-3.5 h-3.5 text-[#f5cc00]" /> Override
                     Gaya Teks Global
                   </h4>
-                  <div className="h-px bg-white/[0.07]" />
+                  <div className="h-px bg-[#141417]" />
 
                   {/* Font Family selector */}
                   <div className="space-y-1.5">
@@ -11552,7 +11807,7 @@ export default function OperatorDashboard() {
                           e.target.value,
                         );
                       }}
-                      className="w-full bg-[#0C0E12] border border-white/[0.09] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-sky-400/50 transition-all cursor-pointer"
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-[#f5cc00] transition-all cursor-pointer"
                     >
                       <option value="Default">
                         Gunakan Sesuai Tema Lagu (Default)
@@ -11588,7 +11843,7 @@ export default function OperatorDashboard() {
                           e.target.value,
                         );
                       }}
-                      className="w-full bg-[#0C0E12] border border-white/[0.09] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-sky-400/50 transition-all cursor-pointer"
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-[#f5cc00] transition-all cursor-pointer"
                     >
                       <option value="Default">
                         Gunakan Sesuai Tema (Default)
@@ -11618,7 +11873,7 @@ export default function OperatorDashboard() {
                           e.target.value,
                         );
                       }}
-                      className="w-full bg-[#0C0E12] border border-white/[0.09] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-sky-400/50 transition-all cursor-pointer"
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-1.5 text-slate-100 text-xs font-sans outline-none focus:border-[#f5cc00] transition-all cursor-pointer"
                     >
                       <option value="Default">Default (Otomatis)</option>
                       <option value="Soft High-Contrast">
@@ -11633,17 +11888,17 @@ export default function OperatorDashboard() {
                 </div>
 
                 {/* Section 4: Streaming & Scale Setup */}
-                <div className="space-y-5 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl">
+                <div className="space-y-5 bg-[#000000] border border-[#27272a] p-4 rounded-xl">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                      <Video className="w-3.5 h-3.5 text-sky-400" /> Integrasi
+                    <h4 className="text-xs font-black text-[#cca000] uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                      <Video className="w-3.5 h-3.5 text-[#f5cc00]" /> Integrasi
                       Live Stream (OBS / vMix)
                     </h4>
-                    <span className="px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-400/20 text-sky-300 text-[8px] font-mono font-bold tracking-wider uppercase">
+                    <span className="px-2 py-0.5 rounded-full bg-[#141417] border border-[#cca000]/40 text-[#f5cc00] text-[8px] font-mono font-bold tracking-wider uppercase">
                       Instant Sync
                     </span>
                   </div>
-                  <div className="h-px bg-white/[0.07]" />
+                  <div className="h-px bg-[#141417]" />
 
                   {/* Instant Copy Link Button */}
                   <div className="space-y-1.5">
@@ -11655,7 +11910,7 @@ export default function OperatorDashboard() {
                         type="text"
                         readOnly
                         value={getPublicUrl("/projector")}
-                        className="flex-1 bg-[#0C0E12] border border-white/[0.09] text-sky-400 rounded-lg px-3 py-1.5 select-all font-mono text-[10px] outline-none"
+                        className="flex-1 bg-[#09090b] border border-[#27272a] text-[#f5cc00] rounded-lg px-3 py-1.5 select-all font-mono text-[10px] outline-none"
                       />
                       <button
                         type="button"
@@ -11667,7 +11922,7 @@ export default function OperatorDashboard() {
                             "success",
                           );
                         }}
-                        className="px-3 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                        className="px-3 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
                       >
                         <Copy className="w-3 h-3" /> Salin Link
                       </button>
@@ -11680,9 +11935,9 @@ export default function OperatorDashboard() {
                   </div>
 
                   {/* OBS/Server Connection Monitor Status */}
-                  <div className="flex items-center gap-2.5 p-2.5 bg-[#0C0E12] border border-white/[0.08] rounded-lg text-[10px] font-sans">
+                  <div className="flex items-center gap-2.5 p-2.5 bg-[#09090b] border border-[#27272a] rounded-lg text-[10px] font-sans">
                     <div
-                      className={`w-2 h-2 rounded-full ${clientCount > 0 ? "bg-emerald-400" : "bg-amber-400"}`}
+                      className={`w-2 h-2 rounded-full ${clientCount > 0 ? "bg-emerald-400" : "bg-[#f5cc00]"}`}
                     />
                     <div className="flex-grow text-slate-400">
                       Sinyal Sinkronisasi:{" "}
@@ -11714,7 +11969,7 @@ export default function OperatorDashboard() {
                           "success",
                         );
                       }}
-                      className="px-2 py-0.5 bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 rounded text-[9px] font-bold border border-white/[0.09] transition-colors uppercase whitespace-nowrap"
+                      className="px-2 py-0.5 bg-[#000000] hover:bg-[#141417] text-slate-300 hover:text-white rounded text-[9px] font-bold border border-[#27272a] transition-colors uppercase whitespace-nowrap"
                     >
                       Pola Kalibrasi
                     </button>
@@ -11758,14 +12013,14 @@ export default function OperatorDashboard() {
                         }}
                         className={`p-2.5 rounded-lg border text-[10px] font-bold uppercase transition-all flex flex-col items-center gap-1.5 text-center cursor-pointer ${
                           !lowerThirdMode
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:border-white/[0.16] hover:text-slate-200"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-400 hover:border-[#cca000]/50 hover:text-slate-200"
                         }`}
                       >
-                        <span className="font-extrabold text-slate-100 text-[11px]">
+                        <span className="font-extrabold text-[11px]">
                           PROJECTOR PENUH (16:9)
                         </span>
-                        <span className="text-[8px] font-medium opacity-70">
+                        <span className="text-[8px] font-medium opacity-75">
                           Lirik di tengah layar, cocok untuk dinding layar besar
                           gereja
                         </span>
@@ -11781,14 +12036,14 @@ export default function OperatorDashboard() {
                         }}
                         className={`p-2.5 rounded-lg border text-[10px] font-bold uppercase transition-all flex flex-col items-center gap-1.5 text-center cursor-pointer ${
                           lowerThirdMode
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:border-white/[0.16] hover:text-slate-200"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-400 hover:border-[#cca000]/50 hover:text-slate-200"
                         }`}
                       >
-                        <span className="font-extrabold text-sky-300 text-[11px]">
+                        <span className="font-extrabold text-[#cca000] text-[11px]">
                           LOWER THIRD BAR (STREAM)
                         </span>
-                        <span className="text-[8px] font-medium opacity-70">
+                        <span className="text-[8px] font-medium opacity-75">
                           Lirik di bagian bawah, ideal untuk overlay video OBS
                         </span>
                       </button>
@@ -11812,14 +12067,14 @@ export default function OperatorDashboard() {
                         }}
                         className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all cursor-pointer flex flex-col items-center justify-center gap-1 ${
                           chromaKeyColor === "transparent"
-                            ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#09090b] border-[#27272a] text-slate-400"
                         }`}
                       >
                         <span className="font-bold">
                           TRANSPARAN (OBS DIRECT)
                         </span>
-                        <span className="text-[7.5px] font-medium opacity-60">
+                        <span className="text-[7.5px] font-medium opacity-70">
                           Tidak perlu setting filter di OBS (Rekomendasi)
                         </span>
                       </button>
@@ -11835,13 +12090,13 @@ export default function OperatorDashboard() {
                         className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all cursor-pointer flex flex-col items-center justify-center gap-1 ${
                           chromaKeyColor === "green"
                             ? "bg-emerald-500/15 border-emerald-400/50 text-emerald-300"
-                            : "bg-[#0C0E12] border-white/[0.08] text-slate-400"
+                            : "bg-[#09090b] border-[#27272a] text-slate-400"
                         }`}
                       >
                         <span className="font-bold">
                           LAYAR HIJAU (CHROMA KEY)
                         </span>
-                        <span className="text-[7.5px] font-medium opacity-60">
+                        <span className="text-[7.5px] font-medium opacity-70">
                           Gunakan filter kroma jika tangkap dari HDMI Capture
                         </span>
                       </button>
@@ -11854,7 +12109,7 @@ export default function OperatorDashboard() {
                       <span className="font-sans">
                         Skala Ukuran Teks (Global Scale)
                       </span>
-                      <span className="text-sky-400 font-bold font-mono tabular-nums">
+                      <span className="text-[#f5cc00] font-bold font-mono tabular-nums">
                         {globalFontSizeScale}%
                       </span>
                     </div>
@@ -11873,7 +12128,7 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="flex-1 accent-sky-400 bg-[#12161F] h-1.5 rounded-lg cursor-pointer"
+                        className="flex-1 accent-[#f5cc00] bg-[#09090b] h-1.5 rounded-lg cursor-pointer"
                       />
                       <input
                         type="number"
@@ -11891,15 +12146,15 @@ export default function OperatorDashboard() {
                             val.toString(),
                           );
                         }}
-                        className="w-14 bg-[#0C0E12] border border-white/[0.09] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums"
+                        className="w-14 bg-[#09090b] border border-[#27272a] focus:border-[#f5cc00] text-slate-100 rounded-md px-2 py-0.5 text-center font-mono text-xs tabular-nums outline-none"
                       />
                     </div>
                   </div>
 
                   {/* Dynamic Help Guides Tab Panel */}
-                  <div className="p-3 bg-[#0C0E12] border border-white/[0.08] rounded-xl space-y-3">
-                    <div className="flex justify-between items-center border-b border-white/[0.07] pb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">
+                  <div className="p-3 bg-[#09090b] border border-[#27272a] rounded-xl space-y-3">
+                    <div className="flex justify-between items-center border-b border-[#27272a] pb-2">
+                      <span className="text-[10px] font-black uppercase text-[#cca000]">
                         PANDUAN PEMASANGAN INSTAN
                       </span>
                       <div className="flex gap-1.5">
@@ -11908,8 +12163,8 @@ export default function OperatorDashboard() {
                           onClick={() => setObsTabActive(true)}
                           className={`px-2.5 py-0.5 rounded-md text-[9px] font-bold uppercase transition-all ${
                             obsTabActive
-                              ? "bg-sky-600/90 text-white"
-                              : "bg-white/[0.04] text-slate-400"
+                              ? "bg-[#f5cc00] text-[#000000]"
+                              : "bg-[#000000] text-slate-400 hover:text-white"
                           }`}
                         >
                           OBS Studio
@@ -11919,8 +12174,8 @@ export default function OperatorDashboard() {
                           onClick={() => setObsTabActive(false)}
                           className={`px-2.5 py-0.5 rounded-md text-[9px] font-bold uppercase transition-all ${
                             !obsTabActive
-                              ? "bg-sky-600/90 text-white"
-                              : "bg-white/[0.04] text-slate-400"
+                              ? "bg-[#f5cc00] text-[#000000]"
+                              : "bg-[#000000] text-slate-400 hover:text-white"
                           }`}
                         >
                           vMix
@@ -11931,13 +12186,13 @@ export default function OperatorDashboard() {
                     {obsTabActive ? (
                       <div className="space-y-1.5 text-[9px] text-slate-400 leading-normal font-sans">
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             1.
                           </span>
                           <span>Klik tombol **Salin Link** di atas.</span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             2.
                           </span>
                           <span>
@@ -11946,7 +12201,7 @@ export default function OperatorDashboard() {
                           </span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             3.
                           </span>
                           <span>
@@ -11955,7 +12210,7 @@ export default function OperatorDashboard() {
                           </span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             4.
                           </span>
                           <span>
@@ -11963,7 +12218,7 @@ export default function OperatorDashboard() {
                           </span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             5.
                           </span>
                           <span>
@@ -11980,13 +12235,13 @@ export default function OperatorDashboard() {
                     ) : (
                       <div className="space-y-1.5 text-[9px] text-slate-400 leading-normal font-sans">
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             1.
                           </span>
                           <span>Klik tombol **Salin Link** di atas.</span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             2.
                           </span>
                           <span>
@@ -11995,7 +12250,7 @@ export default function OperatorDashboard() {
                           </span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             3.
                           </span>
                           <span>
@@ -12003,13 +12258,13 @@ export default function OperatorDashboard() {
                           </span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             4.
                           </span>
                           <span>Tempel/Paste link proyektor ke kolom URL.</span>
                         </p>
                         <p className="flex items-start gap-1">
-                          <span className="text-sky-400 font-bold shrink-0">
+                          <span className="text-[#f5cc00] font-bold shrink-0">
                             5.
                           </span>
                           <span>
@@ -12027,16 +12282,16 @@ export default function OperatorDashboard() {
                 </div>
 
                 {/* Section 5: Cloud Hosting & Mobile Share Synchronization */}
-                <div className="space-y-4 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl">
+                <div className="space-y-4 bg-[#000000] border border-[#27272a] p-4 rounded-xl">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                      <Globe className="w-3.5 h-3.5 text-sky-400" /> Sinkronisasi Cloud & Hosting (Vercel / GitHub)
+                    <h4 className="text-xs font-black text-[#cca000] uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                      <Globe className="w-3.5 h-3.5 text-[#f5cc00]" /> Sinkronisasi Cloud & Hosting (Vercel / GitHub)
                     </h4>
                     <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-emerald-300 text-[8px] font-mono font-bold tracking-wider uppercase">
                       Cloud Sync Ready
                     </span>
                   </div>
-                  <div className="h-px bg-white/[0.07]" />
+                  <div className="h-px bg-[#141417]" />
 
                   <div className="space-y-2">
                     <label className="text-xs text-slate-300 font-medium block">
@@ -12047,13 +12302,13 @@ export default function OperatorDashboard() {
                       value={cloudServerUrl}
                       onChange={(e) => setCloudServerUrl(e.target.value)}
                       placeholder="Contoh: https://church-presenter.railway.app atau http://192.168.1.5:3000"
-                      className="w-full bg-[#0C0E12] border border-white/[0.09] text-slate-100 rounded-lg px-3 py-1.5 text-xs font-mono outline-none focus:border-sky-400/50 transition-all placeholder:text-slate-600"
+                      className="w-full bg-[#09090b] border border-[#27272a] text-slate-100 rounded-lg px-3 py-1.5 text-xs font-mono outline-none focus:border-[#f5cc00] transition-all placeholder:text-slate-600"
                     />
-                    <div className="p-2.5 rounded-lg bg-sky-500/5 border border-sky-400/15 space-y-1">
-                      <p className="text-[10px] text-sky-300 font-bold">
+                    <div className="p-2.5 rounded-lg bg-[#141417]/45 border border-[#cca000]/30 space-y-1">
+                      <p className="text-[10px] text-[#f5cc00] font-bold">
                         Informasi Hosting di Vercel / GitHub Pages:
                       </p>
-                      <p className="text-[9px] text-slate-400 leading-relaxed font-sans">
+                      <p className="text-[9px] text-slate-300 leading-relaxed font-sans">
                         Ketika aplikasi dihosting sebagai frontend statis di Vercel atau GitHub Pages, masukkan URL server backend Node/Socket.io Anda di sini. Link & QR Code Mobile Share akan secara otomatis menyertakan alamat server ini sehingga perangkat mobile jemaat yang memindai QR langsung terhubung tanpa konfigurasi manual!
                       </p>
                     </div>
@@ -12062,7 +12317,7 @@ export default function OperatorDashboard() {
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-2 justify-end mt-8 pt-4 border-t border-white/[0.07]">
+              <div className="flex gap-2 justify-end mt-8 pt-4 border-t border-[#27272a]">
                 <button
                   onClick={() => {
                     localStorage.setItem(
@@ -12131,7 +12386,7 @@ export default function OperatorDashboard() {
                     setShowSettingsModal(false);
                     showToast("Pengaturan sistem & sinkronisasi berhasil disimpan.", "success");
                   }}
-                  className="px-6 py-2 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
+                  className="px-6 py-2 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
                 >
                   Simpan & Terapkan
                 </button>
@@ -12152,11 +12407,11 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
+              className="relative bg-[#09090b] border border-[#27272a] p-8 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
             >
               <div className="flex justify-between items-center mb-6">
                 <div className="flex items-center gap-2.5">
-                  <Clock className="w-5 h-5 text-sky-400" />
+                  <Clock className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-slate-100 uppercase tracking-tight">
                       Konfigurasi Shift Operator
@@ -12169,7 +12424,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowShiftModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.08] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -12177,7 +12432,7 @@ export default function OperatorDashboard() {
 
               <div className="space-y-6">
                 {/* Active Switch */}
-                <div className="flex items-center justify-between p-4 bg-emerald-500/5 border border-emerald-400/15 rounded-xl">
+                <div className="flex items-center justify-between p-4 bg-emerald-500/5 border border-emerald-400/20 rounded-xl">
                   <div className="space-y-0.5">
                     <span className="text-xs text-slate-100 font-bold uppercase tracking-wide">
                       Aktifkan Pembatasan Shift
@@ -12189,7 +12444,7 @@ export default function OperatorDashboard() {
                   </div>
                   <button
                     onClick={() => setTempShiftActive(!tempShiftActive)}
-                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-all ${tempShiftActive ? "bg-emerald-600 justify-end" : "bg-white/[0.1] justify-start"}`}
+                    className={`w-12 h-6 rounded-full flex items-center p-1 cursor-pointer transition-all ${tempShiftActive ? "bg-emerald-600 justify-end" : "bg-[#141417] justify-start"}`}
                   >
                     <motion.div
                       layout
@@ -12210,7 +12465,7 @@ export default function OperatorDashboard() {
                       onChange={(e) => setTempShiftName(e.target.value)}
                       placeholder="Contoh: Ibadah I - Pagi"
                       disabled={!tempShiftActive}
-                      className="w-full bg-[#080A0E] border border-white/[0.09] disabled:opacity-50 rounded-lg px-3 py-2 text-slate-100 text-xs font-sans outline-none focus:border-sky-400/50 transition-all font-medium"
+                      className="w-full bg-[#000000] border border-[#27272a] disabled:opacity-50 rounded-lg px-3 py-2 text-slate-100 text-xs font-sans outline-none focus:border-[#f5cc00] transition-all font-medium"
                     />
                   </div>
 
@@ -12223,7 +12478,7 @@ export default function OperatorDashboard() {
                       value={tempShiftEndTime}
                       onChange={(e) => setTempShiftEndTime(e.target.value)}
                       disabled={!tempShiftActive}
-                      className="w-full bg-[#080A0E] border border-white/[0.09] disabled:opacity-50 rounded-lg px-3 py-2 text-slate-100 text-xs font-mono outline-none focus:border-sky-400/50 transition-all cursor-pointer font-medium tabular-nums"
+                      className="w-full bg-[#000000] border border-[#27272a] disabled:opacity-50 rounded-lg px-3 py-2 text-slate-100 text-xs font-mono outline-none focus:border-[#f5cc00] transition-all cursor-pointer font-medium tabular-nums"
                     />
                     <p className="text-[9px] text-slate-500 font-medium leading-normal">
                       Setelah jam ini dilewati, tampilan di HP jemaat akan
@@ -12232,7 +12487,7 @@ export default function OperatorDashboard() {
                     </p>
                   </div>
 
-                  <div className="space-y-1.5 pt-2 bg-[#080A0E] p-3 rounded-lg border border-white/[0.07]">
+                  <div className="space-y-1.5 pt-2 bg-[#000000] p-3 rounded-lg border border-[#27272a]">
                     <label className="text-xs text-emerald-400 font-bold block uppercase tracking-wider">
                       Sistem QR-Code Cetak Aktif
                     </label>
@@ -12245,7 +12500,7 @@ export default function OperatorDashboard() {
                 {/* Preset Options */}
                 {tempShiftActive && (
                   <div className="space-y-2">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block font-sans">
+                    <span className="text-[10px] font-bold text-[#cca000] uppercase tracking-widest block font-sans">
                       Template Waktu
                     </span>
                     <div className="grid grid-cols-3 gap-2">
@@ -12254,9 +12509,9 @@ export default function OperatorDashboard() {
                           setTempShiftName("Ibadah Pagi");
                           setTempShiftEndTime("09:30");
                         }}
-                        className="px-2.5 py-1.5 bg-[#080A0E] hover:bg-white/[0.05] border border-white/[0.08] text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
+                        className="px-2.5 py-1.5 bg-[#000000] hover:bg-[#141417] border border-[#27272a] hover:border-[#cca000]/60 text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
                       >
-                        <div className="font-bold text-sky-400">Pagi</div>
+                        <div className="font-bold text-[#f5cc00]">Pagi</div>
                         <div className="font-mono text-[9px] opacity-60 tabular-nums">
                           Mulai/Batas 09:30
                         </div>
@@ -12266,9 +12521,9 @@ export default function OperatorDashboard() {
                           setTempShiftName("Ibadah Siang");
                           setTempShiftEndTime("12:00");
                         }}
-                        className="px-2.5 py-1.5 bg-[#080A0E] hover:bg-white/[0.05] border border-white/[0.08] text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
+                        className="px-2.5 py-1.5 bg-[#000000] hover:bg-[#141417] border border-[#27272a] hover:border-[#cca000]/60 text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
                       >
-                        <div className="font-bold text-sky-400">Siang</div>
+                        <div className="font-bold text-[#f5cc00]">Siang</div>
                         <div className="font-mono text-[9px] opacity-60 tabular-nums">
                           Mulai/Batas 12:00
                         </div>
@@ -12278,9 +12533,9 @@ export default function OperatorDashboard() {
                           setTempShiftName("Ibadah Tambahan");
                           setTempShiftEndTime("13:30");
                         }}
-                        className="px-2.5 py-1.5 bg-[#080A0E] hover:bg-white/[0.05] border border-white/[0.08] text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
+                        className="px-2.5 py-1.5 bg-[#000000] hover:bg-[#141417] border border-[#27272a] hover:border-[#cca000]/60 text-left rounded-lg text-[10px] text-slate-300 hover:text-white transition-all cursor-pointer"
                       >
-                        <div className="font-bold text-sky-400">
+                        <div className="font-bold text-[#f5cc00]">
                           Tambahan
                         </div>
                         <div className="font-mono text-[9px] opacity-60 tabular-nums">
@@ -12293,10 +12548,10 @@ export default function OperatorDashboard() {
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-2 justify-end mt-8 pt-4 border-t border-white/[0.07]">
+              <div className="flex gap-2 justify-end mt-8 pt-4 border-t border-[#27272a]">
                 <button
                   onClick={() => setShowShiftModal(false)}
-                  className="px-5 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all"
+                  className="px-5 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all"
                 >
                   Batal
                 </button>
@@ -12314,7 +12569,7 @@ export default function OperatorDashboard() {
                     });
                     setShowShiftModal(false);
                   }}
-                  className="px-6 py-2 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all"
+                  className="px-6 py-2 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-xs font-black uppercase tracking-wider transition-all"
                 >
                   Simpan & Terapkan Shift
                 </button>
@@ -12335,12 +12590,12 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 15 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
+              className="relative bg-[#09090b] border border-[#27272a] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-lg w-full text-left"
             >
               {/* Header */}
               <div className="flex justify-between items-center mb-6">
                 <div className="flex items-center gap-2.5">
-                  <User className="w-5 h-5 text-sky-400" />
+                  <User className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-slate-100 uppercase tracking-wider font-sans">
                       Kabin Akun Operator
@@ -12353,7 +12608,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowAccountModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.08] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -12362,21 +12617,21 @@ export default function OperatorDashboard() {
               {/* Profile Card View */}
               <div className="space-y-5 max-h-[72vh] overflow-y-auto pr-2 custom-scrollbar">
                 {/* Visual Identity Preview */}
-                <div className="bg-[#080A0E] border border-white/[0.08] p-4 rounded-2xl flex items-center gap-4 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-32 h-32 rounded-full filter blur-[40px] opacity-10 bg-sky-500 pointer-events-none" />
+                <div className="bg-[#000000] border border-[#27272a] p-4 rounded-2xl flex items-center gap-4 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 rounded-full filter blur-[40px] opacity-10 bg-[#f5cc00] pointer-events-none" />
                   <div
                     className={`w-14 h-14 rounded-full ${getAvatarColors(userAvatarColor).bg} border-2 ${getAvatarColors(userAvatarColor).border} flex items-center justify-center text-2xl font-black ${getAvatarColors(userAvatarColor).text} shadow-inner uppercase`}
                   >
                     {username ? username.charAt(0) : "O"}
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase font-black text-sky-400 tracking-wider font-mono">
+                    <span className="text-[10px] uppercase font-black text-[#cca000] tracking-wider font-mono">
                       Kartu Identitas Aktif
                     </span>
                     <h4 className="text-base font-black text-slate-100 truncate max-w-[280px]">
                       {username || "Operator Utama"}
                     </h4>
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-sky-500/10 border border-sky-400/20 text-sky-300 rounded text-[9px] font-bold uppercase tracking-wider mt-1">
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-[#141417] border border-[#cca000]/40 text-[#f5cc00] rounded text-[9px] font-bold uppercase tracking-wider mt-1">
                       <Shield className="w-3 h-3" /> {userRole}
                     </span>
                   </div>
@@ -12386,7 +12641,7 @@ export default function OperatorDashboard() {
                 <div className="space-y-4">
                   {/* Name field */}
                   <div className="space-y-1.5">
-                    <label className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">
+                    <label className="text-[10px] text-[#cca000] font-extrabold uppercase tracking-wider">
                       Nama Lengkap Operator
                     </label>
                     <input
@@ -12394,19 +12649,19 @@ export default function OperatorDashboard() {
                       value={username}
                       onChange={(e) => setUsername(e.target.value.slice(0, 30))}
                       placeholder="Masukkan nama operator..."
-                      className="w-full bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-600 outline-none transition-all font-sans font-medium"
+                      className="w-full bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-600 outline-none transition-all font-sans font-medium"
                     />
                   </div>
 
                   {/* Role Selection */}
                   <div className="space-y-1.5">
-                    <label className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">
+                    <label className="text-[10px] text-[#cca000] font-extrabold uppercase tracking-wider">
                       Peran & Tanggung Jawab
                     </label>
                     <select
                       value={userRole}
                       onChange={(e) => setUserRole(e.target.value)}
-                      className="w-full bg-[#080A0E] border border-white/[0.09] focus:border-sky-400/50 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none transition-all cursor-pointer font-sans font-medium"
+                      className="w-full bg-[#000000] border border-[#27272a] focus:border-[#f5cc00] rounded-xl px-3 py-2 text-xs text-slate-100 outline-none transition-all cursor-pointer font-sans font-medium"
                     >
                       <option value="Administrator">
                         Administrator (Sistem Utama)
@@ -12428,7 +12683,7 @@ export default function OperatorDashboard() {
 
                   {/* Avatar Color Choice */}
                   <div className="space-y-1.5">
-                    <label className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">
+                    <label className="text-[10px] text-[#cca000] font-extrabold uppercase tracking-wider block">
                       Warna Tema Profil
                     </label>
                     <div className="flex gap-2.5">
@@ -12448,7 +12703,7 @@ export default function OperatorDashboard() {
                             key={color}
                             type="button"
                             onClick={() => setUserAvatarColor(color)}
-                            className={`w-7 h-7 rounded-full ${scheme.bg} border-2 ${userAvatarColor === color ? "border-white scale-110 ring-4 ring-sky-400/15" : scheme.border} hover:scale-105 transition-all flex items-center justify-center`}
+                            className={`w-7 h-7 rounded-full ${scheme.bg} border-2 ${userAvatarColor === color ? "border-[#f5cc00] scale-110 ring-4 ring-[#f5cc00]/20" : scheme.border} hover:scale-105 transition-all flex items-center justify-center`}
                           >
                             <div
                               className={`w-3 h-3 rounded-full ${color === "indigo" ? "bg-indigo-500" : color === "emerald" ? "bg-emerald-500" : color === "rose" ? "bg-rose-500" : color === "amber" ? "bg-amber-500" : color === "purple" ? "bg-purple-500" : "bg-blue-500"}`}
@@ -12460,11 +12715,11 @@ export default function OperatorDashboard() {
                   </div>
 
                   {/* PIN Form block */}
-                  <div className="bg-[#080A0E] border border-white/[0.08] p-4 rounded-2xl space-y-3">
+                  <div className="bg-[#000000] border border-[#27272a] p-4 rounded-2xl space-y-3">
                     <div className="flex items-center gap-2">
-                      <KeyRound className="w-4 h-4 text-sky-400" />
+                      <KeyRound className="w-4 h-4 text-[#f5cc00]" />
                       <div>
-                        <span className="text-[10px] text-sky-400 font-black tracking-wider uppercase block leading-none">
+                        <span className="text-[10px] text-[#cca000] font-black tracking-wider uppercase block leading-none">
                           Pengaturan PIN Sistem
                         </span>
                         <span className="text-[8px] text-slate-500 mt-0.5 block leading-none">
@@ -12488,7 +12743,7 @@ export default function OperatorDashboard() {
                             const val = e.target.value.replace(/\D/g, "");
                             e.target.value = val;
                           }}
-                          className="bg-[#0C0E12] border border-white/[0.09] tracking-[1em] text-center font-black text-sm rounded-lg px-2.5 py-1.5 text-slate-100 outline-none focus:border-sky-400/50 w-24"
+                          className="bg-[#09090b] border border-[#27272a] tracking-[1em] text-center font-black text-sm rounded-lg px-2.5 py-1.5 text-slate-100 outline-none focus:border-[#f5cc00] w-24"
                         />
                         <button
                           type="button"
@@ -12510,14 +12765,14 @@ export default function OperatorDashboard() {
                               );
                             }
                           }}
-                          className="px-3.5 py-1.5 bg-sky-500/15 hover:bg-sky-600/90 border border-sky-400/30 hover:text-white text-sky-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                          className="px-3.5 py-1.5 bg-[#141417] hover:bg-[#f5cc00] border border-[#cca000]/50 hover:text-[#000000] text-[#f5cc00] rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
                         >
                           Perbarui PIN Baru
                         </button>
                       </div>
                       <p className="text-[8px] text-slate-500 leading-normal">
                         Ubah PIN default{" "}
-                        <strong className="text-sky-400">1234</strong> ke pin
+                        <strong className="text-[#f5cc00]">1234</strong> ke pin
                         kustom pilihan Anda. Perubahan akan langsung divalidasi
                         saat masuk dari halaman login.
                       </p>
@@ -12525,8 +12780,8 @@ export default function OperatorDashboard() {
                   </div>
 
                   {/* Metadata / Session details */}
-                  <div className="bg-[#080A0E] border border-white/[0.07] p-3.5 rounded-xl text-[10px] space-y-1.5 font-bold">
-                    <span className="text-slate-500 uppercase tracking-widest text-[9px] block mb-1">
+                  <div className="bg-[#000000] border border-[#27272a] p-3.5 rounded-xl text-[10px] space-y-1.5 font-bold">
+                    <span className="text-[#cca000] uppercase tracking-widest text-[9px] block mb-1">
                       Rincian Sesi Aktif
                     </span>
                     <div className="flex justify-between">
@@ -12561,7 +12816,7 @@ export default function OperatorDashboard() {
               </div>
 
               {/* Modal Actions */}
-              <div className="flex justify-between items-center mt-6 pt-4 border-t border-white/[0.07]">
+              <div className="flex justify-between items-center mt-6 pt-4 border-t border-[#27272a]">
                 <button
                   type="button"
                   onClick={() => {
@@ -12592,7 +12847,7 @@ export default function OperatorDashboard() {
                     showToast("Profil Operator berhasil disimpan!", "success");
                     setShowAccountModal(false);
                   }}
-                  className="px-5 py-2 bg-sky-600/90 hover:bg-sky-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                  className="px-5 py-2 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
                 >
                   Simpan Perubahan
                 </button>
@@ -12616,14 +12871,14 @@ export default function OperatorDashboard() {
               exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.15 } }}
               className={`px-4 py-3 rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.75)] backdrop-blur-md border text-xs font-semibold flex items-center space-x-3 pointer-events-auto max-w-sm ${
                 toast.type === "success"
-                  ? "bg-[#0C0E12]/95 border-emerald-500/25 text-emerald-300"
+                  ? "bg-[#09090b]/95 border-emerald-500/35 text-emerald-300"
                   : toast.type === "warn"
-                    ? "bg-[#0C0E12]/95 border-rose-500/25 text-rose-300"
-                    : "bg-[#0C0E12]/95 border-sky-500/25 text-sky-300"
+                    ? "bg-[#09090b]/95 border-rose-500/35 text-rose-300"
+                    : "bg-[#09090b]/95 border-[#cca000]/50 text-[#f5cc00]"
               }`}
             >
               <div
-                className={`w-2 h-2 rounded-full ${toast.type === "success" ? "bg-emerald-400" : toast.type === "warn" ? "bg-rose-400" : "bg-sky-400"}`}
+                className={`w-2 h-2 rounded-full ${toast.type === "success" ? "bg-emerald-400" : toast.type === "warn" ? "bg-rose-400" : "bg-[#f5cc00]"}`}
               />
               <span>{toast.text}</span>
             </motion.div>
@@ -12647,12 +12902,12 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.92, opacity: 0, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-4xl w-full flex flex-col max-h-[85vh]"
+              className="relative bg-[#09090b] border border-[#27272a] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-4xl w-full flex flex-col max-h-[85vh]"
             >
               {/* Header */}
-              <div className="flex justify-between items-center pb-4 border-b border-white/[0.07] mb-4">
+              <div className="flex justify-between items-center pb-4 border-b border-[#27272a] mb-4">
                 <div className="flex items-center gap-2">
-                  <ImageIcon className="w-5 h-5 text-sky-400" />
+                  <ImageIcon className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-white uppercase tracking-wider">
                       Perpustakaan Media (Media Library)
@@ -12665,7 +12920,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowMediaLibraryModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -12674,24 +12929,24 @@ export default function OperatorDashboard() {
               {/* Library Grid */}
               <div className="flex-1 overflow-y-auto pr-1 space-y-6 custom-scrollbar">
                 {/* 1. Guidance Callout */}
-                <div className="bg-sky-500/[0.06] border border-sky-400/20 p-4 rounded-xl text-left">
-                  <h4 className="text-[10px] font-black uppercase text-sky-300 mb-1 tracking-widest">
+                <div className="bg-[#000000] border border-[#27272a] p-4 rounded-xl text-left">
+                  <h4 className="text-[10px] font-black uppercase text-[#cca000] mb-1 tracking-widest">
                     Folder Khusus Background (public/backgrounds/)
                   </h4>
                   <p className="text-[11px] text-slate-300 leading-relaxed font-sans">
-                    Semua gambar &amp; video background disimpan dan dibaca langsung dari 1 folder khusus (<code className="text-sky-300">public/backgrounds/</code>) serta folder penyimpanan biner browser (tanpa ditulis menjadi kode). Letakkan file di folder tersebut sebelum deploy ke GitHub/Vercel, atau unggah langsung melalui tombol di bawah.
+                    Semua gambar &amp; video background disimpan dan dibaca langsung dari 1 folder khusus (<code className="text-[#f5cc00]">public/backgrounds/</code>) serta folder penyimpanan biner browser (tanpa ditulis menjadi kode). Letakkan file di folder tersebut sebelum deploy ke GitHub/Vercel, atau unggah langsung melalui tombol di bawah.
                   </p>
                 </div>
 
                 {/* 2. Drag-and-drop / Custom user uploads */}
                 <div>
                   <div className="flex justify-between items-center mb-2">
-                    <h4 className="text-[10px] font-black uppercase text-sky-400 tracking-widest">
+                    <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-widest">
                       Media Unggahan Saya (Custom Uploads)
                     </h4>
                     <button
                       onClick={() => bgFileInputRef.current?.click()}
-                      className="text-[9px] bg-sky-500/15 border border-sky-400/35 hover:bg-sky-600/90 hover:text-white px-2.5 py-1 rounded text-sky-200 font-bold uppercase tracking-wider transition-all"
+                      className="text-[9px] bg-[#f5cc00] hover:bg-[#ffd60a] border border-[#cca000] px-2.5 py-1 rounded text-[#000000] font-black uppercase tracking-wider transition-all"
                     >
                       Unggah File Baru
                     </button>
@@ -12699,7 +12954,7 @@ export default function OperatorDashboard() {
 
                   {[...customBackgrounds, ...customVideoBackgrounds].length ===
                   0 ? (
-                    <div className="border border-dashed border-white/[0.14] p-8 rounded-xl bg-[#080A0E] text-center">
+                    <div className="border border-dashed border-[#27272a] p-8 rounded-xl bg-[#000000] text-center">
                       <p className="text-xs text-slate-400">
                         Belum ada media kustom yang diunggah.
                       </p>
@@ -12717,7 +12972,7 @@ export default function OperatorDashboard() {
                           return (
                             <div
                               key={idx}
-                              className="slide-canvas-preserve relative aspect-video group rounded-xl overflow-hidden border border-white/[0.08] bg-black"
+                              className="slide-canvas-preserve relative aspect-video group rounded-xl overflow-hidden border border-[#27272a] bg-black"
                             >
                               {isVid ? (
                                 <video
@@ -12745,7 +13000,7 @@ export default function OperatorDashboard() {
                                       "success",
                                     );
                                   }}
-                                  className="px-2.5 py-1 bg-sky-600/90 hover:bg-sky-500 text-white rounded text-[8px] font-black uppercase tracking-wider"
+                                  className="px-2.5 py-1 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded text-[8px] font-black uppercase tracking-wider"
                                 >
                                   Gunakan
                                 </button>
@@ -12796,10 +13051,10 @@ export default function OperatorDashboard() {
               </div>
 
               {/* Close footer */}
-              <div className="flex justify-end gap-2 pt-4 border-t border-white/[0.07] mt-4">
+              <div className="flex justify-end gap-2 pt-4 border-t border-[#27272a] mt-4">
                 <button
                   onClick={() => setShowMediaLibraryModal(false)}
-                  className="px-6 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-xs font-black uppercase tracking-wider transition-all"
+                  className="px-6 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all"
                 >
                   Tutup Perpustakaan
                 </button>
@@ -12825,12 +13080,12 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.92, opacity: 0, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col"
+              className="relative bg-[#09090b] border border-[#27272a] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col"
             >
               {/* Header */}
-              <div className="flex justify-between items-center pb-4 border-b border-white/[0.07] mb-6">
+              <div className="flex justify-between items-center pb-4 border-b border-[#27272a] mb-6">
                 <div className="flex items-center gap-2.5">
-                  <Mic2 className="w-5 h-5 text-sky-400" />
+                  <Mic2 className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-white uppercase tracking-wider font-sans">
                       Audio Monitor & Pad Konsol
@@ -12843,7 +13098,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowAudioMonitorsModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -12852,8 +13107,8 @@ export default function OperatorDashboard() {
               {/* Grid content */}
               <div className="grid grid-cols-5 gap-6">
                 {/* Simulated VU Output meters */}
-                <div className="col-span-2 bg-[#080A0E] border border-white/[0.08] p-4 rounded-xl flex flex-col space-y-3">
-                  <h4 className="text-[9px] font-black uppercase text-slate-400 tracking-wider">
+                <div className="col-span-2 bg-[#000000] border border-[#27272a] p-4 rounded-xl flex flex-col space-y-3">
+                  <h4 className="text-[9px] font-black uppercase text-[#cca000] tracking-wider">
                     Monitor Sinyal (VU Meters)
                   </h4>
 
@@ -12863,17 +13118,17 @@ export default function OperatorDashboard() {
                     <div className="space-y-1">
                       <div className="flex justify-between items-center text-[8px] font-bold text-slate-400 uppercase">
                         <span>L/R Master Out</span>
-                        <span className="font-mono text-sky-400 tabular-nums">
+                        <span className="font-mono text-[#f5cc00] tabular-nums">
                           -12.4 dB
                         </span>
                       </div>
-                      <div className="h-2 bg-white/[0.06] rounded-full overflow-hidden flex gap-[1px]">
+                      <div className="h-2 bg-[#09090b] rounded-full overflow-hidden flex gap-[1px]">
                         <div
-                          className="h-full bg-sky-500 rounded-l"
+                          className="h-full bg-[#cca000] rounded-l"
                           style={{ width: "65%" }}
                         ></div>
                         <div
-                          className="h-full bg-sky-400"
+                          className="h-full bg-[#f5cc00]"
                           style={{ width: "10%" }}
                         ></div>
                         <div
@@ -12891,7 +13146,7 @@ export default function OperatorDashboard() {
                           AKTIF
                         </span>
                       </div>
-                      <div className="h-2 bg-white/[0.06] rounded-full overflow-hidden flex">
+                      <div className="h-2 bg-[#09090b] rounded-full overflow-hidden flex">
                         <div
                           className="h-full bg-emerald-400"
                           style={{ width: "38%" }}
@@ -12905,19 +13160,19 @@ export default function OperatorDashboard() {
                         <span>Koor / Musik (Aux-1)</span>
                         <span className="font-mono text-slate-500">SENYAP</span>
                       </div>
-                      <div className="h-2 bg-white/[0.06] rounded-full overflow-hidden">
+                      <div className="h-2 bg-[#09090b] rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-white/15"
+                          className="h-full bg-[#141417]"
                           style={{ width: "5%" }}
                         ></div>
                       </div>
                     </div>
                   </div>
 
-                  <div className="h-px bg-white/[0.07] my-1" />
+                  <div className="h-px bg-[#141417] my-1" />
 
                   {/* Web Audio Context State */}
-                  <div className="p-2 bg-[#0C0E12] rounded border border-white/[0.07] flex items-center justify-between text-[8px] font-bold">
+                  <div className="p-2 bg-[#09090b] rounded border border-[#27272a] flex items-center justify-between text-[8px] font-bold">
                     <span className="text-slate-400 uppercase">
                       Status Audio Engine:
                     </span>
@@ -12931,7 +13186,7 @@ export default function OperatorDashboard() {
                 {/* Ambient Sound Pads player */}
                 <div className="col-span-3 space-y-4">
                   <div className="flex justify-between items-center">
-                    <h4 className="text-[9px] font-black uppercase text-sky-400 tracking-wider">
+                    <h4 className="text-[9px] font-black uppercase text-[#cca000] tracking-wider">
                       Ambiance Church sound Pad
                     </h4>
                     <span className="text-[8px] text-slate-500 font-bold uppercase font-mono">
@@ -12947,23 +13202,23 @@ export default function OperatorDashboard() {
                         onClick={() => playChurchPad(key)}
                         className={`py-3 rounded-lg border text-xs font-black uppercase tracking-wider transition-all duration-300 flex flex-col items-center justify-center ${
                           activePadKey === key
-                            ? "bg-sky-500/20 border-sky-400 text-sky-100 shadow-[0_0_20px_rgba(56,189,248,0.18)] ring-1 ring-sky-400/50 scale-95"
-                            : "bg-[#080A0E] border-white/[0.08] hover:border-sky-400/40 hover:text-white text-slate-400"
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00] shadow-[0_0_20px_rgba(245,204,0,0.2)] ring-1 ring-[#f5cc00]/60 scale-95"
+                            : "bg-[#000000] border-[#27272a] hover:border-[#cca000] hover:text-white text-slate-400"
                         }`}
                       >
                         <span>{key} Major</span>
                         {activePadKey === key && (
                           <span className="flex justify-center gap-[2px] mt-1.5">
                             <span
-                              className="w-[2px] h-2.5 bg-sky-300 rounded animate-bounce"
+                              className="w-[2px] h-2.5 bg-[#f5cc00] rounded animate-bounce"
                               style={{ animationDelay: "0.1s" }}
                             />
                             <span
-                              className="w-[2px] h-2.5 bg-sky-300 rounded animate-bounce"
+                              className="w-[2px] h-2.5 bg-[#f5cc00] rounded animate-bounce"
                               style={{ animationDelay: "0.3s" }}
                             />
                             <span
-                              className="w-[2px] h-2.5 bg-sky-300 rounded animate-bounce"
+                              className="w-[2px] h-2.5 bg-[#f5cc00] rounded animate-bounce"
                               style={{ animationDelay: "0.2s" }}
                             />
                           </span>
@@ -12973,12 +13228,12 @@ export default function OperatorDashboard() {
                   </div>
 
                   {/* Settings Row */}
-                  <div className="p-3 bg-[#080A0E] border border-white/[0.08] rounded-xl space-y-3">
+                  <div className="p-3 bg-[#000000] border border-[#27272a] rounded-xl space-y-3">
                     {/* Volume Slider */}
                     <div className="space-y-1">
                       <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase">
                         <span>Volume Pad</span>
-                        <span className="font-mono text-slate-300 tabular-nums">
+                        <span className="font-mono text-[#f5cc00] tabular-nums">
                           {Math.round(padVolume * 100)}%
                         </span>
                       </div>
@@ -12991,7 +13246,7 @@ export default function OperatorDashboard() {
                         onChange={(e) =>
                           setPadVolume(parseFloat(e.target.value))
                         }
-                        className="w-full accent-sky-400 bg-white/[0.08] h-1.5 rounded-lg cursor-pointer"
+                        className="w-full accent-[#f5cc00] bg-[#09090b] h-1.5 rounded-lg cursor-pointer"
                       />
                     </div>
 
@@ -13013,8 +13268,8 @@ export default function OperatorDashboard() {
                             }}
                             className={`py-1 rounded text-[8px] font-black uppercase tracking-widest border transition-all ${
                               padStyle === style
-                                ? "bg-sky-500/15 border-sky-400/50 text-sky-200"
-                                : "bg-[#0C0E12] border-white/[0.08] text-slate-400 hover:text-slate-200"
+                                ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                                : "bg-[#09090b] border-[#27272a] text-slate-400 hover:text-slate-200"
                             }`}
                           >
                             {style === "Warm"
@@ -13036,7 +13291,7 @@ export default function OperatorDashboard() {
                       className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-lg border transition-all ${
                         activePadKey
                           ? "bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-600/85 hover:text-white hover:border-rose-400"
-                          : "bg-[#080A0E] border-white/[0.06] text-slate-600 cursor-not-allowed"
+                          : "bg-[#000000] border-[#27272a] text-slate-600 cursor-not-allowed"
                       }`}
                     >
                       Cinematic Fade-Out
@@ -13046,8 +13301,8 @@ export default function OperatorDashboard() {
                       onClick={() => stopChurchPad(false)}
                       className={`px-4 py-2 text-[10px] font-black uppercase tracking-wider rounded-lg border transition-all ${
                         activePadKey
-                          ? "bg-white/[0.04] border-white/[0.08] hover:bg-white/[0.08] text-slate-300"
-                          : "bg-[#080A0E] border-white/[0.06] text-slate-600 cursor-not-allowed"
+                          ? "bg-[#000000] border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white"
+                          : "bg-[#000000] border-[#27272a] text-slate-600 cursor-not-allowed"
                       }`}
                     >
                       Mati Seketika
@@ -13057,10 +13312,10 @@ export default function OperatorDashboard() {
               </div>
 
               {/* Close Footer */}
-              <div className="flex justify-end pt-4 mt-6 border-t border-white/[0.07]">
+              <div className="flex justify-end pt-4 mt-6 border-t border-[#27272a]">
                 <button
                   onClick={() => setShowAudioMonitorsModal(false)}
-                  className="px-6 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-xs font-black uppercase tracking-wider transition-all"
+                  className="px-6 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all"
                 >
                   Tutup Konsol
                 </button>
@@ -13086,11 +13341,11 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.92, opacity: 0, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col max-h-[85vh] overflow-hidden text-left"
+              className="relative bg-[#09090b] border border-[#27272a] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col max-h-[85vh] overflow-hidden text-left"
             >
-              <div className="flex justify-between items-center pb-4 border-b border-white/[0.07] mb-4">
+              <div className="flex justify-between items-center pb-4 border-b border-[#27272a] mb-4">
                 <div className="flex items-center gap-2.5">
-                  <Book className="w-5 h-5 text-sky-400" />
+                  <Book className="w-5 h-5 text-[#f5cc00]" />
                   <div>
                     <h3 className="text-sm font-black text-white uppercase tracking-wider">
                       Database Alkitab (Bible Database)
@@ -13102,7 +13357,7 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowBibleDbModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
@@ -13123,19 +13378,19 @@ export default function OperatorDashboard() {
                 {/* Unified Import Section with beautiful Sub-tabs */}
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <h4 className="text-[10px] font-black uppercase text-sky-400 tracking-widest text-left">
+                    <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-widest text-left">
                       Metode Impor Alkitab
                     </h4>
-                    <div className="flex flex-wrap gap-1 p-1 bg-[#080A0E] border border-white/[0.08] rounded-lg">
+                    <div className="flex flex-wrap gap-1 p-1 bg-[#000000] border border-[#27272a] rounded-lg">
                       <button
                         onClick={() => setBibleImportTab("text_raw")}
-                        className={`px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-all ${bibleImportTab === "text_raw" ? "bg-sky-600/90 text-white" : "text-slate-400 hover:text-white"}`}
+                        className={`px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-all ${bibleImportTab === "text_raw" ? "bg-[#f5cc00] text-[#000000]" : "text-slate-400 hover:text-white"}`}
                       >
                         Teks Kustom
                       </button>
                       <button
                         onClick={() => setBibleImportTab("json")}
-                        className={`px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-all ${bibleImportTab === "json" ? "bg-sky-600/90 text-white" : "text-slate-400 hover:text-white"}`}
+                        className={`px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-all ${bibleImportTab === "json" ? "bg-[#f5cc00] text-[#000000]" : "text-slate-400 hover:text-white"}`}
                       >
                         JSON
                       </button>
@@ -13153,7 +13408,7 @@ export default function OperatorDashboard() {
                           id="text-bible-title-input"
                           type="text"
                           placeholder="misal: Alkitab Bahasa Batak"
-                          className="w-full px-3 py-2 text-xs bg-[#080A0E] border border-white/[0.09] rounded-lg text-white font-extrabold focus:outline-none focus:border-sky-400/50"
+                          className="w-full px-3 py-2 text-xs bg-[#000000] border border-[#27272a] rounded-lg text-white font-extrabold focus:outline-none focus:border-[#f5cc00]"
                         />
                       </div>
                       <div className="flex flex-col gap-2">
@@ -13167,7 +13422,7 @@ export default function OperatorDashboard() {
                           id="text-bible-content-input"
                           placeholder="Yohanes 3:16 Karena begitu besar kasih Allah akan dunia ini...&#10;Yohanes 3:17 Sebab Allah mengutus Anak-Nya...&#10;Kejadian 1:1 Pada mulanya Allah menciptakan..."
                           rows={6}
-                          className="w-full p-3 text-xs bg-[#080A0E] border border-white/[0.09] rounded-lg text-white font-mono leading-relaxed focus:outline-none focus:border-sky-400/50"
+                          className="w-full p-3 text-xs bg-[#000000] border border-[#27272a] rounded-lg text-white font-mono leading-relaxed focus:outline-none focus:border-[#f5cc00]"
                         />
                       </div>
                       <button
@@ -13220,7 +13475,7 @@ export default function OperatorDashboard() {
                             );
                           }
                         }}
-                        className="w-full py-2.5 bg-sky-600/90 hover:bg-sky-500 text-white font-extrabold text-xs uppercase tracking-wider rounded-lg transition-all"
+                        className="w-full py-2.5 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] font-black text-xs uppercase tracking-wider rounded-lg transition-all"
                       >
                         Proses dan Pasang Alkitab Teks
                       </button>
@@ -13236,15 +13491,15 @@ export default function OperatorDashboard() {
                             .getElementById("bible-db-upload-selector")
                             ?.click();
                         }}
-                        className="border border-dashed border-white/[0.15] hover:border-sky-400/50 p-6 rounded-2xl bg-[#080A0E] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
+                        className="border border-dashed border-[#27272a] hover:border-[#cca000] p-6 rounded-2xl bg-[#000000] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
                       >
-                        <Book className="w-8 h-8 text-sky-400/75 mb-2 group-hover:scale-110 transition-transform" />
+                        <Book className="w-8 h-8 text-[#cca000] mb-2 group-hover:scale-110 transition-transform" />
                         <span className="font-extrabold text-slate-200 text-xs">
                           Pilih atau Seret Berkas .json Alkitab
                         </span>
                         <p className="text-[9px] text-slate-400 mt-1 max-w-sm leading-normal">
                           Harus berupa objek JSON dengan struktur:{" "}
-                          <code className="text-sky-300 font-mono">
+                          <code className="text-[#f5cc00] font-mono">
                             {
                               "{ id, name, books: { BookName: { ChapterNum: [Verses] } } }"
                             }
@@ -13322,14 +13577,14 @@ export default function OperatorDashboard() {
                 {/* List of Loaded Custom Databases */}
                 {customBibles.length > 0 && (
                   <div className="space-y-3 pt-2">
-                    <h4 className="text-[10px] font-black uppercase text-sky-400 tracking-widest text-left">
+                    <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-widest text-left">
                       Database Terpasang ({customBibles.length})
                     </h4>
                     <div className="space-y-2">
                       {customBibles.map((cb) => (
                         <div
                           key={cb.id}
-                          className="flex justify-between items-center p-2.5 bg-[#080A0E] rounded-lg border border-white/[0.08] text-left"
+                          className="flex justify-between items-center p-2.5 bg-[#000000] rounded-lg border border-[#27272a] text-left"
                         >
                           <div className="text-left">
                             <p className="text-white font-extrabold text-xs text-left">
@@ -13369,10 +13624,10 @@ export default function OperatorDashboard() {
                 )}
               </div>
 
-              <div className="flex justify-end pt-4 mt-4 border-t border-white/[0.07] shrink-0">
+              <div className="flex justify-end pt-4 mt-4 border-t border-[#27272a] shrink-0">
                 <button
                   onClick={() => setShowBibleDbModal(false)}
-                  className="px-5 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                  className="px-5 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
                 >
                   Selesai
                 </button>
@@ -13398,11 +13653,11 @@ export default function OperatorDashboard() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.92, opacity: 0, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-[#0C0E12] border border-white/[0.09] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col max-h-[85vh] overflow-hidden text-left"
+              className="relative bg-[#09090b] border border-[#27272a] p-6 rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.85)] max-w-2xl w-full flex flex-col max-h-[85vh] overflow-hidden text-left"
             >
-              <div className="flex justify-between items-center pb-4 border-b border-white/[0.07] mb-3 text-left">
+              <div className="flex justify-between items-center pb-4 border-b border-[#27272a] mb-3 text-left">
                 <div className="flex items-center gap-2.5 text-left">
-                  <ListMusic className="w-5 h-5 text-sky-400" />
+                  <ListMusic className="w-5 h-5 text-[#f5cc00]" />
                   <div className="text-left">
                     <h3 className="text-sm font-black text-white uppercase tracking-wider text-left">
                       Database Nyanyian & Lagu (Song Database)
@@ -13415,38 +13670,38 @@ export default function OperatorDashboard() {
                 </div>
                 <button
                   onClick={() => setShowSongDbModal(false)}
-                  className="p-1 rounded-full hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors"
+                  className="p-1 rounded-full hover:bg-[#141417] text-slate-400 hover:text-white transition-colors"
                 >
                   <XCircle className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="mb-3 p-3 bg-sky-500/[0.07] border border-sky-400/20 rounded-xl text-left">
-                <h4 className="text-[10px] font-black uppercase text-sky-300 tracking-wider mb-1">
+              <div className="mb-3 p-3 bg-[#000000] border border-[#cca000]/40 rounded-xl text-left">
+                <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-wider mb-1">
                   Buku Ende &amp; Buku Nyanyian HKBP Aktif Otomatis
                 </h4>
                 <p className="text-[10.5px] text-slate-300 leading-relaxed">
                   Katalog lengkap dari{" "}
-                  <span className="text-sky-300 font-mono">{HKBP_SOURCE_URLS.bukuEnde}</span> dan{" "}
-                  <span className="text-sky-300 font-mono">{HKBP_SOURCE_URLS.bukuNyanyian}</span>{" "}
+                  <span className="text-[#f5cc00] font-mono">{HKBP_SOURCE_URLS.bukuEnde}</span> dan{" "}
+                  <span className="text-[#f5cc00] font-mono">{HKBP_SOURCE_URLS.bukuNyanyian}</span>{" "}
                   (semua bait &amp; reffrein) langsung tersedia di tab <strong>Buku Ende</strong> &amp;{" "}
                   <strong>BN HKBP</strong> pada menu <strong>Lagu</strong> tanpa perlu unggah file database.
                 </p>
               </div>
 
               {/* Modal Sub-Tabs */}
-              <div className="flex border-b border-white/[0.07] mb-4 text-[10px] font-black uppercase tracking-wider">
+              <div className="flex border-b border-[#27272a] mb-4 text-[10px] font-black uppercase tracking-wider">
                 <button
                   type="button"
                   onClick={() => setSongImportTab("raw_text")}
-                  className={`flex-1 py-2 text-center transition-all ${songImportTab === "raw_text" ? "text-sky-300 border-b-2 border-sky-400 bg-sky-500/10" : "text-slate-400 hover:text-slate-200"}`}
+                  className={`flex-1 py-2 text-center transition-all ${songImportTab === "raw_text" ? "text-[#f5cc00] border-b-2 border-[#f5cc00] bg-[#141417]" : "text-slate-400 hover:text-slate-200"}`}
                 >
                   ✍️ Copy-Paste Lirik
                 </button>
                 <button
                   type="button"
                   onClick={() => setSongImportTab("files")}
-                  className={`flex-1 py-2 text-center transition-all ${songImportTab === "files" ? "text-sky-300 border-b-2 border-sky-400 bg-sky-500/10" : "text-slate-400 hover:text-slate-200"}`}
+                  className={`flex-1 py-2 text-center transition-all ${songImportTab === "files" ? "text-[#f5cc00] border-b-2 border-[#f5cc00] bg-[#141417]" : "text-slate-400 hover:text-slate-200"}`}
                 >
                   📁 Unggah (.txt / .json)
                 </button>
@@ -13456,14 +13711,14 @@ export default function OperatorDashboard() {
                 {/* TAB 2: COPY-PASTE TEXT */}
                 {songImportTab === "raw_text" && (
                   <div className="space-y-4">
-                    <div className="p-3.5 bg-sky-500/[0.06] border border-sky-400/20 rounded-xl text-sky-200">
+                    <div className="p-3.5 bg-[#000000] border border-[#27272a] rounded-xl text-[#f5cc00]">
                       <p className="font-bold text-[11px] mb-1">
                         💡 Tips Sukses Impor Copy-Paste:
                       </p>
                       <p className="text-[10px] leading-relaxed text-slate-300">
                         Anda bisa memasukkan banyak lagu sekaligus! Cukup
                         pisahkan tiap lagu memakai pembatas{" "}
-                        <strong className="font-mono bg-sky-500/20 px-1 py-0.5 rounded text-white">
+                        <strong className="font-mono bg-[#141417] px-1 py-0.5 rounded text-[#f5cc00]">
                           ---
                         </strong>{" "}
                         di baris baru. Sistem kami sangat cerdas dan akan
@@ -13473,7 +13728,7 @@ export default function OperatorDashboard() {
                     </div>
 
                     <div className="space-y-1.5 text-left">
-                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      <label className="text-[10px] font-black uppercase text-[#cca000] tracking-wider">
                         Tempel Teks Lirik Lagu Di Sini:
                       </label>
                       <textarea
@@ -13499,7 +13754,7 @@ Nyanyi bagi Dia
 
 Slide 2
 Haleluya pujilah Dia...`}
-                        className="w-full h-56 bg-[#080A0E] border border-white/[0.09] rounded-xl p-4 text-[11px] font-mono focus:outline-none focus:border-sky-400/50 text-white placeholder-slate-600 leading-relaxed overflow-y-auto"
+                        className="w-full h-56 bg-[#000000] border border-[#27272a] rounded-xl p-4 text-[11px] font-mono focus:outline-none focus:border-[#f5cc00] text-white placeholder-slate-600 leading-relaxed overflow-y-auto"
                       />
                     </div>
 
@@ -13571,11 +13826,11 @@ Haleluya pujilah Dia...`}
                           }
                         }}
                         disabled={isAiParsingSongs}
-                        className="py-2.5 bg-sky-600/90 hover:bg-sky-500 border border-sky-400/30 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 flex items-center justify-center gap-1.5 shadow-[0_8px_20px_rgba(2,132,199,0.22)] cursor-pointer"
+                        className="py-2.5 bg-[#f5cc00] hover:bg-[#ffd60a] border border-[#cca000] text-[#000000] rounded-xl text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 flex items-center justify-center gap-1.5 shadow-[0_8px_20px_rgba(245,204,0,0.22)] cursor-pointer"
                       >
                         {isAiParsingSongs ? (
                           <>
-                            <div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" />
+                            <div className="w-3 h-3 rounded-full border border-[#000000] border-t-transparent animate-spin" />
                             Sedang Diproses AI...
                           </>
                         ) : (
@@ -13617,7 +13872,7 @@ Haleluya pujilah Dia...`}
                           }
                         }}
                         disabled={isAiParsingSongs}
-                        className="py-2.5 bg-[#080A0E] hover:bg-white/[0.06] text-slate-200 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-white/[0.09] flex items-center justify-center gap-2 cursor-pointer"
+                        className="py-2.5 bg-[#000000] hover:bg-[#141417] text-slate-200 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-[#27272a] flex items-center justify-center gap-2 cursor-pointer"
                       >
                         ⚡ Ekstrak Standar
                       </button>
@@ -13630,7 +13885,7 @@ Haleluya pujilah Dia...`}
                   <div className="space-y-4">
                     {/* JSON Import Card */}
                     <div className="space-y-2 text-left">
-                      <h4 className="text-[10px] font-black uppercase text-sky-400 tracking-widest">
+                      <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-widest">
                         Impor Backup Kumpulan Lagu Basis Data (JSON)
                       </h4>
                       <p className="text-[10px] text-slate-400 leading-normal mb-1">
@@ -13643,15 +13898,15 @@ Haleluya pujilah Dia...`}
                             .getElementById("song-db-upload-selector")
                             ?.click();
                         }}
-                        className="border border-dashed border-white/[0.15] hover:border-sky-400/50 p-5 rounded-2xl bg-[#080A0E] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
+                        className="border border-dashed border-[#27272a] hover:border-[#cca000] p-5 rounded-2xl bg-[#000000] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
                       >
-                        <ListMusic className="w-8 h-8 text-sky-400/75 mb-2 group-hover:scale-110 transition-transform" />
+                        <ListMusic className="w-8 h-8 text-[#cca000] mb-2 group-hover:scale-110 transition-transform" />
                         <span className="font-extrabold text-slate-200 text-xs">
                           Pilih atau Seret Berkas .json Kumpulan Lagu
                         </span>
                         <p className="text-[9px] text-slate-400 mt-1 max-w-sm leading-normal">
                           Harus berupa berkas JSON array yang memiliki struktur:{" "}
-                          <code className="text-sky-300 font-mono">
+                          <code className="text-[#f5cc00] font-mono">
                             {
                               "[ { title, artist, verses: [], verseLabels: [] } ]"
                             }
@@ -13757,11 +14012,11 @@ Haleluya pujilah Dia...`}
                       </div>
                     </div>
 
-                    <div className="h-px bg-white/[0.07] my-4" />
+                    <div className="h-px bg-[#141417] my-4" />
 
                     {/* TXT Import Card */}
                     <div className="space-y-2 text-left">
-                      <h4 className="text-[10px] font-black uppercase text-sky-300 tracking-widest">
+                      <h4 className="text-[10px] font-black uppercase text-[#cca000] tracking-widest">
                         Impor Lagu Massal dari Berkas Teks (.txt)
                       </h4>
                       <p className="text-[10px] text-slate-400 leading-normal mb-1">
@@ -13777,16 +14032,16 @@ Haleluya pujilah Dia...`}
                             .getElementById("song-txt-upload-selector")
                             ?.click();
                         }}
-                        className="border border-dashed border-white/[0.15] hover:border-sky-400/50 p-5 rounded-2xl bg-[#080A0E] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
+                        className="border border-dashed border-[#27272a] hover:border-[#cca000] p-5 rounded-2xl bg-[#000000] flex flex-col items-center justify-center cursor-pointer transition-all text-center group"
                       >
-                        <FileText className="w-8 h-8 text-sky-400/75 mb-2 group-hover:scale-110 transition-transform" />
+                        <FileText className="w-8 h-8 text-[#cca000] mb-2 group-hover:scale-110 transition-transform" />
                         <span className="font-extrabold text-slate-200 text-xs">
                           Pilih Berkas Dokumen Teks (.txt)
                         </span>
                         <p className="text-[9px] text-slate-400 mt-1 max-w-sm leading-normal">
                           Berkas teks baris per baris. Tiap lagu dipisahkan
                           dengan tanda hubung{" "}
-                          <code className="text-sky-300 font-mono">---</code>.
+                          <code className="text-[#f5cc00] font-mono">---</code>.
                           Bisa unggah banyak file sekaligus!
                         </p>
                         <input
@@ -13892,11 +14147,11 @@ Haleluya pujilah Dia...`}
                 )}
               </div>
 
-              <div className="flex justify-end pt-4 mt-4 border-t border-white/[0.07] shrink-0">
+              <div className="flex justify-end pt-4 mt-4 border-t border-[#27272a] shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowSongDbModal(false)}
-                  className="px-5 py-2 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                  className="px-5 py-2 bg-[#000000] border border-[#27272a] hover:bg-[#141417] text-slate-300 hover:text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
                 >
                   Selesai
                 </button>
@@ -13908,7 +14163,7 @@ Haleluya pujilah Dia...`}
 
       {contextMenu.show && (
         <div
-          className="fixed z-[500] bg-[#0D1017]/95 backdrop-blur-xl border border-white/[0.09] rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 w-52 text-[11px] font-sans text-slate-300 pointer-events-auto"
+          className="fixed z-[500] bg-[#09090b]/95 backdrop-blur-xl border border-[#27272a] rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.85)] py-1 w-52 text-[11px] font-sans text-slate-300 pointer-events-auto"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => {
             e.stopPropagation();
@@ -13919,24 +14174,24 @@ Haleluya pujilah Dia...`}
             <>
               <button
                 onClick={() => addToSchedule(contextMenu.data)}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors border-b border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors border-b border-[#27272a] cursor-pointer"
               >
                 <Plus className="w-3 h-3 text-emerald-400" /> Tambah ke Jadwal
               </button>
               <button
                 onClick={() => setSelectedSong(contextMenu.data)}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
-                <Presentation className="w-3 h-3 text-sky-400" /> Live
+                <Presentation className="w-3 h-3 text-[#f5cc00]" /> Live
                 Presentasi
               </button>
               <button
                 onClick={() =>
                   setEditingItem({ ...contextMenu.data, type: "song" } as any)
                 }
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
-                <Edit2 className="w-3 h-3 text-sky-400" /> Desain & Edit
+                <Edit2 className="w-3 h-3 text-[#cca000]" /> Desain & Edit
                 Konten
               </button>
               <button
@@ -13954,7 +14209,7 @@ Haleluya pujilah Dia...`}
                   savePersistentSongs(currentAccountId, updated);
                   showToast("Lagu diduplikasi ke Perpustakaan.", "success");
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <Copy className="w-3 h-3 text-slate-400" /> Duplikat Lagu
               </button>
@@ -13966,7 +14221,7 @@ Haleluya pujilah Dia...`}
                     onClick={(e) =>
                       deleteSongFromLibrary(contextMenu.data, e as any)
                     }
-                    className="w-full text-left px-3 py-1.5 hover:bg-rose-500/20 hover:text-rose-200 flex items-center gap-2 text-rose-400 transition-colors border-t border-white/[0.06] cursor-pointer"
+                    className="w-full text-left px-3 py-1.5 hover:bg-rose-500/20 hover:text-rose-200 flex items-center gap-2 text-rose-400 transition-colors border-t border-[#27272a] cursor-pointer"
                   >
                     <Trash className="w-3 h-3 text-rose-400" /> Hapus Lagu
                     Database
@@ -13979,7 +14234,7 @@ Haleluya pujilah Dia...`}
             <>
               <button
                 onClick={() => setSelectedSong(contextMenu.data as any)}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <Play className="w-3 h-3 text-emerald-400" /> Tampilkan di
                 Presenter
@@ -14020,6 +14275,8 @@ Haleluya pujilah Dia...`}
                       textTracking: item.textTracking,
                       textSpacing: item.textSpacing,
                       slideTransition: item.slideTransition,
+                      textAnimation: item.textAnimation,
+                      animationSpeed: item.animationSpeed,
                       textOutline: item.textOutline,
                       textOutlineColor: item.textOutlineColor,
                       bgOpacity: item.bgOpacity,
@@ -14049,9 +14306,9 @@ Haleluya pujilah Dia...`}
               )}
               <button
                 onClick={() => setEditingItem(contextMenu.data)}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors border-b border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors border-b border-[#27272a] cursor-pointer"
               >
-                <Edit2 className="w-3 h-3 text-sky-400" /> Edit Item Jadwal
+                <Edit2 className="w-3 h-3 text-[#cca000]" /> Edit Item Jadwal
                 Ini
               </button>
               <button
@@ -14069,7 +14326,7 @@ Haleluya pujilah Dia...`}
                   );
                   showToast("Jadwal lagu diduplikasi.", "success");
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <Copy className="w-3 h-3 text-slate-400" /> Duplikat Item
               </button>
@@ -14096,7 +14353,7 @@ Haleluya pujilah Dia...`}
                     showToast("Seluruh rencana jadwal dikosongkan.", "info");
                   }
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-rose-500/25 hover:text-rose-200 flex items-center gap-2 text-rose-400 transition-colors border-t border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-rose-500/25 hover:text-rose-200 flex items-center gap-2 text-rose-400 transition-colors border-t border-[#27272a] cursor-pointer"
               >
                 <XCircle className="w-3 h-3 text-rose-400" /> Kosongkan Rencana
                 Jadwal
@@ -14128,7 +14385,7 @@ Haleluya pujilah Dia...`}
                     sIdx,
                   );
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-emerald-500/15 hover:text-emerald-200 flex items-center gap-2 transition-colors border-b border-white/[0.06] cursor-pointer font-extrabold"
+                className="w-full text-left px-3 py-1.5 hover:bg-emerald-500/15 hover:text-emerald-200 flex items-center gap-2 transition-colors border-b border-[#27272a] cursor-pointer font-extrabold"
               >
                 <Play className="w-3 h-3 text-emerald-400" /> Live Sekarang (Go
                 Live)
@@ -14137,8 +14394,11 @@ Haleluya pujilah Dia...`}
                 onClick={() => {
                   if (selectedSong) {
                     const item = schedule.find(
-                      (s) => s.songId === selectedSong.id,
+                      (s) =>
+                        s.id === selectedSong.id ||
+                        s.songId === selectedSong.id,
                     ) || {
+                      ...selectedSong,
                       id: selectedSong.id,
                       title: selectedSong.title,
                       artist: selectedSong.artist || "Unknown",
@@ -14146,22 +14406,26 @@ Haleluya pujilah Dia...`}
                         ? "bible"
                         : "song",
                       verses: [...selectedSong.verses],
-                      verseLabels: selectedSong.verseLabels ? [...selectedSong.verseLabels] : undefined,
-                      pericopes: selectedSong.pericopes ? { ...selectedSong.pericopes } : undefined,
+                      verseLabels: selectedSong.verseLabels
+                        ? [...selectedSong.verseLabels]
+                        : undefined,
+                      pericopes: selectedSong.pericopes
+                        ? { ...selectedSong.pericopes }
+                        : undefined,
                     };
                     setEditingItem(item as ScheduleItem);
                   }
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
-                <Edit2 className="w-3 h-3 text-sky-400" /> Desain Sesi Builder
+                <Edit2 className="w-3 h-3 text-[#cca000]" /> Desain Sesi Builder
               </button>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(contextMenu.data.verse);
                   showToast("Lirik bait disalin ke papan klip.", "success");
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <Copy className="w-3 h-3 text-slate-400" /> Salin Teks Lirik
               </button>
@@ -14173,9 +14437,9 @@ Haleluya pujilah Dia...`}
                     "info",
                   );
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors border-t border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors border-t border-[#27272a] cursor-pointer"
               >
-                <Layers className="w-3 h-3 text-sky-400" /> Toggle Lower Third
+                <Layers className="w-3 h-3 text-[#cca000]" /> Toggle Lower Third
               </button>
             </>
           )}
@@ -14198,9 +14462,9 @@ Haleluya pujilah Dia...`}
               </button>
               <button
                 onClick={() => toggleMasterOverride("clear")}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors border-b border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors border-b border-[#27272a] cursor-pointer"
               >
-                <Lock className="w-3 h-3 text-sky-400" /> Kosongkan Teks
+                <Lock className="w-3 h-3 text-[#cca000]" /> Kosongkan Teks
                 Lirik (Clear)
               </button>
               <button
@@ -14211,9 +14475,9 @@ Haleluya pujilah Dia...`}
                     "info",
                   );
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-sky-500/15 hover:text-sky-200 flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-[#f5cc00] flex items-center gap-2 transition-colors cursor-pointer"
               >
-                <Layers className="w-3 h-3 text-sky-400" /> Mode Lower Third
+                <Layers className="w-3 h-3 text-[#cca000]" /> Mode Lower Third
               </button>
               <button
                 onClick={() => {
@@ -14222,7 +14486,7 @@ Haleluya pujilah Dia...`}
                   setChromaKeyColor(col);
                   showToast(`Warna chroma-key diubah ke ${col}`, "info");
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] hover:text-white flex items-center gap-2 transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-white flex items-center gap-2 transition-colors cursor-pointer"
               >
                 <Eye className="w-3 h-3 text-slate-300" /> Chroma Key:{" "}
                 {chromaKeyColor === "green" ? "Transparent" : "Hijau"}
@@ -14232,7 +14496,7 @@ Haleluya pujilah Dia...`}
                   setMasterOverride(null);
                   showToast("Kembali ke Presentasi Normal.", "success");
                 }}
-                className="w-full text-left px-3 py-1.5 hover:bg-emerald-500/15 hover:text-emerald-200 flex items-center gap-2 transition-colors border-t border-white/[0.06] cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-emerald-500/15 hover:text-emerald-200 flex items-center gap-2 transition-colors border-t border-[#27272a] cursor-pointer"
               >
                 <Play className="w-3 h-3 text-emerald-400" /> Off Override
                 (Tampilkan Live)
@@ -14243,17 +14507,17 @@ Haleluya pujilah Dia...`}
       )}
 
       {/* Bottom Status Bar */}
-      <footer className="h-8 bg-[#090B0F] border-t border-white/[0.08] px-4 flex items-center justify-between text-[10px] text-slate-500 font-bold tracking-tighter shrink-0 select-none">
+      <footer className="h-8 bg-[#09090b] border-t border-[#27272a] px-4 flex items-center justify-between text-[10px] text-slate-400 font-bold tracking-tighter shrink-0 select-none">
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-3">
-            <span className="text-slate-500">CPU</span>
-            <div className="w-12 h-1.5 bg-[#07080B] border border-white/[0.06] rounded-full overflow-hidden">
+            <span className="text-slate-400">CPU</span>
+            <div className="w-12 h-1.5 bg-[#000000] border border-[#27272a] rounded-full overflow-hidden">
               <div
-                className="h-full bg-sky-400 transition-all duration-500"
+                className="h-full bg-[#f5cc00] transition-all duration-500"
                 style={{ width: `${cpuVal}%` }}
               ></div>
             </div>
-            <span className="text-slate-300 font-mono text-[9px] w-6 shrink-0 tabular-nums">
+            <span className="text-slate-200 font-mono text-[9px] w-6 shrink-0 tabular-nums">
               {cpuVal}%
             </span>
           </div>
@@ -14273,16 +14537,16 @@ Haleluya pujilah Dia...`}
 
         <div className="flex items-center space-x-2 text-[9.5px]">
           <span className="text-slate-400 font-medium">App Developer :</span>
-          <span className="text-sky-400 font-black uppercase tracking-tight">
+          <span className="text-[#f5cc00] font-black uppercase tracking-tight">
             Pirma Siahaan
           </span>
-          <span className="text-slate-600 font-light">|</span>
-          <span className="text-slate-400 font-medium font-mono">
+          <span className="text-[#27272a] font-light">|</span>
+          <span className="text-slate-300 font-medium font-mono">
             Email : pirmasiahaan1234@gmail.com
           </span>
         </div>
 
-        <div className="flex items-center space-x-6 text-slate-500">
+        <div className="flex items-center space-x-6 text-slate-400">
           <span className="hidden xl:inline">OUTPUT: 1920x1080 (PRIMARY)</span>
           <span className="font-mono">v1.2.0-STABLE</span>
         </div>

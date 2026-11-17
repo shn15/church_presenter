@@ -28,7 +28,7 @@ export const AppLogo = ({
 
   if (bgWhiteSquare) {
     return (
-      <div className={`bg-white rounded-xl p-1 shadow-lg border border-[#2A2A2E]/60 flex items-center justify-center overflow-hidden shrink-0 ${className}`}>
+      <div className={`bg-white rounded-xl p-1 shadow-lg border border-[#cca000]/35 flex items-center justify-center overflow-hidden shrink-0 ${className}`}>
         {content}
       </div>
     );
