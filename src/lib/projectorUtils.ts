@@ -6,7 +6,7 @@
 import { getActiveAccountId } from "./accountManager";
 import { getSyncRoomId } from "./cloudSync";
 
-export const getPublicUrl = (pathOrUrl: string): string => {
+export const getPublicUrl = (pathOrUrl: string, accountIdOverride?: string): string => {
   if (!pathOrUrl) return "";
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   let fullUrl = "";
@@ -17,14 +17,19 @@ export const getPublicUrl = (pathOrUrl: string): string => {
     fullUrl = origin + cleanPath;
   }
 
-  // If path is for mobile share, attach room ID for serverless cloud sync & configured server if present
-  if (fullUrl.includes("mode=share") && typeof window !== "undefined") {
+  // Attach account, room ID, and configured socket server for projector targets (/projector, mode=obs, mode=share)
+  if ((fullUrl.includes("/projector") || fullUrl.includes("mode=share") || fullUrl.includes("mode=obs")) && typeof window !== "undefined") {
     try {
-      let accId = getActiveAccountId();
+      let accId = accountIdOverride || getActiveAccountId();
       try {
         const parsed = new URL(fullUrl);
         accId = parsed.searchParams.get("account") || accId;
       } catch {}
+
+      if (!fullUrl.includes("account=") && accId) {
+        const sep = fullUrl.includes("?") ? "&" : "?";
+        fullUrl += `${sep}account=${encodeURIComponent(accId)}`;
+      }
 
       if (!fullUrl.includes("room=")) {
         const roomId = getSyncRoomId(accId);
@@ -32,7 +37,7 @@ export const getPublicUrl = (pathOrUrl: string): string => {
         fullUrl += `${sep}room=${encodeURIComponent(roomId)}`;
       }
 
-      if (!fullUrl.includes("&server=")) {
+      if (!fullUrl.includes("server=")) {
         const serverUrl = localStorage.getItem("cp_socket_server_url") || ((import.meta as any).env?.VITE_SOCKET_URL as string);
         if (serverUrl) {
           const sep = fullUrl.includes("?") ? "&" : "?";
@@ -51,8 +56,7 @@ export const getPublicUrl = (pathOrUrl: string): string => {
  */
 export const openProjectorExtendWindow = async (accountId?: string): Promise<Window | null> => {
   const targetAcc = accountId || getActiveAccountId();
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const projectorUrl = `${origin}/projector?account=${targetAcc}`;
+  const projectorUrl = getPublicUrl(`/projector?account=${encodeURIComponent(targetAcc)}`, targetAcc);
 
   // 1. Check for W3C Window Management API (Supported in modern Chrome/Edge)
   if ("getScreenDetails" in window && typeof (window as any).getScreenDetails === "function") {

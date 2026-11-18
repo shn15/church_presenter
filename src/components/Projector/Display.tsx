@@ -350,18 +350,19 @@ export default function ProjectorDisplay() {
     return processedUrl;
   }, [mediaUrls]);
 
-  // Check if this screen is opened inside a mobile share device context
-  // This satisfies both query parameter scan and physical device mode check
-  const isMobileShare = typeof window !== "undefined" && (
-    new URLSearchParams(window.location.search).get("mode") === "share"
+  // Distinguish dedicated OBS Live Output mode vs Mobile Share mode vs Fullscreen Projector
+  const urlMode = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("mode") : null;
+  const isObsMode = typeof window !== "undefined" && (
+    urlMode === "obs" || new URLSearchParams(window.location.search).get("obs") === "1"
   );
+  const isMobileShare = !isObsMode && urlMode === "share";
   
   const [isSessionValid, setIsSessionValid] = useState(() => {
     if (typeof window === "undefined") return true;
     
-    // Check if we are running in mobile share mode
+    // OBS & Projector modes connect directly to Live Output without Mobile Share session locks
     const params = new URLSearchParams(window.location.search);
-    const isShare = params.get("mode") === "share";
+    const isShare = params.get("mode") === "share" && params.get("obs") !== "1";
     
     if (!isShare) return true;
 
@@ -711,6 +712,16 @@ export default function ProjectorDisplay() {
     if (syncedSettings.chromaKeyColor) setChromaKeyColor(syncedSettings.chromaKeyColor);
   }, [syncedSettings]);
 
+  // Keep root html/body transparent in OBS Direct Transparent / Lower Third mode
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const obsCanvasTransparent = (isObsMode || lowerThirdMode) && chromaKeyColor !== "green";
+    document.documentElement.classList.toggle("obs-transparent-root", obsCanvasTransparent);
+    return () => {
+      document.documentElement.classList.remove("obs-transparent-root");
+    };
+  }, [isObsMode, lowerThirdMode, chromaKeyColor]);
+
   useEffect(() => {
     if (currentSlide) {
       console.log("Projector received slide:", currentSlide.type, currentSlide.title);
@@ -895,6 +906,22 @@ export default function ProjectorDisplay() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  const isObsStandby =
+    isObsMode &&
+    (!currentSlide ||
+      currentSlide.isLive === false ||
+      (currentSlide.content === "System Offline" && currentSlide.isLive === false));
+
+  if (isObsStandby) {
+    return (
+      <div
+        className={`w-screen h-screen overflow-hidden ${
+          chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent"
+        }`}
+      />
     );
   }
 
@@ -1107,11 +1134,29 @@ export default function ProjectorDisplay() {
     });
   };
 
+  const rawSlideBg = (currentSlide.backgroundOverride || currentSlide.background || "").trim();
+  const isEmptyOrBlackBg =
+    !rawSlideBg ||
+    rawSlideBg.toLowerCase() === "#000000" ||
+    rawSlideBg.toLowerCase() === "#000" ||
+    rawSlideBg.toLowerCase() === "transparent";
+  const shouldShowObsDirectTransparent =
+    isObsMode && (lowerThirdMode || (chromaKeyColor === "transparent" && isEmptyOrBlackBg));
+  const shouldShowObsGreenKey =
+    (isObsMode || lowerThirdMode) && chromaKeyColor === "green" && (lowerThirdMode || isEmptyOrBlackBg);
+  const outerCanvasBgClass = lowerThirdMode
+    ? (chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent")
+    : shouldShowObsGreenKey
+      ? "bg-[#00ff00]"
+      : shouldShowObsDirectTransparent
+        ? "bg-transparent"
+        : "bg-black";
+
   return (
-    <div className={`slide-canvas-preserve relative w-screen h-screen overflow-hidden ${lowerThirdMode ? (chromaKeyColor === 'green' ? 'bg-[#00ff00]' : 'bg-transparent') : 'bg-black'} ${isLight ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
-      <div className={`relative overflow-hidden flex items-center justify-center @container ${outputResolution === '4:3' ? 'aspect-[4/3] h-full max-w-full' : 'w-full h-full'} ${lowerThirdMode ? (chromaKeyColor === 'green' ? 'bg-[#00ff00]' : 'bg-transparent') : ''}`} style={{ containerType: 'inline-size' }}>
+    <div className={`slide-canvas-preserve relative w-screen h-screen overflow-hidden ${outerCanvasBgClass} ${isLight ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
+      <div className={`relative overflow-hidden flex items-center justify-center @container ${outputResolution === '4:3' ? 'aspect-[4/3] h-full max-w-full' : 'w-full h-full'} ${lowerThirdMode || isObsMode ? (shouldShowObsGreenKey ? 'bg-[#00ff00]' : 'bg-transparent') : ''}`} style={{ containerType: 'inline-size' }}>
         {/* Background with intelligent color / image / video rendering support */}
-      {!lowerThirdMode && (() => {
+      {!lowerThirdMode && !shouldShowObsDirectTransparent && !shouldShowObsGreenKey && (() => {
         const rawBg = currentSlide.backgroundOverride || currentSlide.background || "";
         const bgKey = extractMediaPath(rawBg) || rawBg;
         const resolvedBgSrc = resolveMedia(rawBg);

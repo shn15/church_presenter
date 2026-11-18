@@ -49,6 +49,12 @@
     color-scheme: dark;
   }
 
+  html.obs-transparent-root,
+  html.obs-transparent-root body {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+
   .tabular-nums {
     font-variant-numeric: tabular-nums;
   }

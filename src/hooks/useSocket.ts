@@ -80,6 +80,8 @@ export const useSocket = (explicitAccountId?: string) => {
     isLive: true,
   });
   const latestSlideRef = useRef<Slide | null>(null);
+  const latestSettingsRef = useRef<SyncedSettings | null>(null);
+  const hasReceivedLiveSlideRef = useRef<boolean>(false);
 
   const [operatorStatus, setOperatorStatus] = useState<{
     active: boolean;
@@ -132,6 +134,7 @@ export const useSocket = (explicitAccountId?: string) => {
   }, []);
 
   const applyIncomingSlide = useCallback((slide: Slide) => {
+    hasReceivedLiveSlideRef.current = true;
     const cleaned = cleanSlideForBroadcast(slide);
     latestSlideRef.current = cleaned;
     setCurrentSlide((prev) => {
@@ -158,6 +161,7 @@ export const useSocket = (explicitAccountId?: string) => {
   }, [targetAccountId]);
 
   const applyIncomingSettings = useCallback((settings: SyncedSettings) => {
+    latestSettingsRef.current = settings;
     setSyncedSettings((prev) => {
       if (prev && JSON.stringify(prev) === JSON.stringify(settings)) {
         return prev;
@@ -192,6 +196,10 @@ export const useSocket = (explicitAccountId?: string) => {
   useEffect(() => {
     latestSlideRef.current = currentSlide;
   }, [currentSlide]);
+
+  useEffect(() => {
+    latestSettingsRef.current = syncedSettings;
+  }, [syncedSettings]);
 
   useEffect(() => {
     // 1. Serverless Cloud Sync (MQTT over WSS + WebRTC Media Transfer) — works everywhere including Vercel & Mobile Share
@@ -232,6 +240,18 @@ export const useSocket = (explicitAccountId?: string) => {
             accountId: targetAccountId,
             isLive: latestOperatorStatusRef.current.isLive,
           });
+          if (latestSlideRef.current) {
+            newSocket?.emit("slide:change", {
+              accountId: targetAccountId,
+              slide: latestSlideRef.current,
+            });
+          }
+          if (latestSettingsRef.current) {
+            newSocket?.emit("settings:change", {
+              accountId: targetAccountId,
+              settings: latestSettingsRef.current,
+            });
+          }
         }
       });
 
@@ -241,6 +261,10 @@ export const useSocket = (explicitAccountId?: string) => {
 
       newSocket.on("slide:update", (slide: Slide) => {
         applyIncomingSlide(slide);
+      });
+
+      newSocket.on("settings:update", (settings: SyncedSettings) => {
+        applyIncomingSettings(settings);
       });
 
       newSocket.on("shift:update", (shift: Shift) => {
@@ -327,10 +351,27 @@ export const useSocket = (explicitAccountId?: string) => {
       }
     }
 
-    // 5. Viewer-side liveness & timeout detection when no operator is active
+    // 5. Viewer-side initial HTTP live-output snapshot & liveness detection
     let initialTimeout: number | undefined;
     let livenessInterval: number | undefined;
     if (!isOperatorContext && typeof window !== "undefined") {
+      const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
+      fetch(`${apiBase}/api/live-output?account=${encodeURIComponent(targetAccountId)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data) return;
+          if (data.settings) {
+            applyIncomingSettings(data.settings);
+          }
+          if (data.slide && !hasReceivedLiveSlideRef.current) {
+            applyIncomingSlide(data.slide);
+          }
+          if (data.operatorStatus) {
+            applyIncomingOperatorStatus(data.operatorStatus);
+          }
+        })
+        .catch(() => {});
+
       try {
         const storedStatus = localStorage.getItem(`cp_operator_status_${targetAccountId}`);
         if (storedStatus) {
@@ -372,6 +413,7 @@ export const useSocket = (explicitAccountId?: string) => {
 
   const changeSlide = useCallback((slide: Slide) => {
     const cleaned = cleanSlideForBroadcast(slide);
+    latestSlideRef.current = cleaned;
     setCurrentSlide(cleaned);
     try {
       setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
@@ -383,12 +425,23 @@ export const useSocket = (explicitAccountId?: string) => {
       channel.close();
     }
 
-    if (socket?.connected) {
-      socket.emit("slide:change", { accountId: targetAccountId, slide: cleaned });
+    const activeSocket = socketRef.current || socket;
+    if (activeSocket?.connected) {
+      activeSocket.emit("slide:change", { accountId: targetAccountId, slide: cleaned });
     }
 
     cloudRef.current?.publishSlide(cleaned);
-  }, [socket, targetAccountId]);
+
+    if (isOperatorContext && typeof window !== "undefined") {
+      const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
+      fetch(`${apiBase}/api/live-output`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: targetAccountId, slide: cleaned }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+  }, [socket, targetAccountId, isOperatorContext, targetServerUrl]);
 
   const updateShift = useCallback((shift: Shift) => {
     setCurrentShift(shift);
@@ -402,22 +455,37 @@ export const useSocket = (explicitAccountId?: string) => {
       channel.close();
     }
 
-    if (socket?.connected) {
-      socket.emit("shift:change", { accountId: targetAccountId, shift });
+    const activeSocket = socketRef.current || socket;
+    if (activeSocket?.connected) {
+      activeSocket.emit("shift:change", { accountId: targetAccountId, shift });
     }
 
     cloudRef.current?.publishShift(shift);
   }, [socket, targetAccountId]);
 
   const syncSettings = useCallback((settings: SyncedSettings) => {
+    latestSettingsRef.current = settings;
     applyIncomingSettings(settings);
     if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
       const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
       channel.postMessage({ type: "settings:update", settings });
       channel.close();
     }
+    const activeSocket = socketRef.current || socket;
+    if (activeSocket?.connected) {
+      activeSocket.emit("settings:change", { accountId: targetAccountId, settings });
+    }
     cloudRef.current?.publishSettings(settings);
-  }, [targetAccountId, applyIncomingSettings]);
+    if (isOperatorContext && typeof window !== "undefined") {
+      const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
+      fetch(`${apiBase}/api/live-output`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: targetAccountId, settings }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+  }, [targetAccountId, applyIncomingSettings, socket, isOperatorContext, targetServerUrl]);
 
   const requestCloudMedia = useCallback((url: string) => {
     cloudRef.current?.requestMediaTransfer(url);

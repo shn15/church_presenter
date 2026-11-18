@@ -532,7 +532,10 @@ export default function OperatorDashboard() {
         isLive: isLiveRef.current,
       });
       publishOperatorStatus(true, isLiveRef.current);
-      if (currentSlide) {
+      if (
+        currentSlide &&
+        !(currentSlide.content === "System Offline" && currentSlide.isLive === false)
+      ) {
         origChangeSlide({
           ...currentSlide,
           isLive: isLive,
@@ -3256,7 +3259,8 @@ export default function OperatorDashboard() {
     }
   };
 
-  const projectorUrl = getPublicUrl(`/projector?mode=share&account=${currentAccountId}`);
+  const projectorUrl = getPublicUrl(`/projector?mode=share&account=${encodeURIComponent(currentAccountId)}`, currentAccountId);
+  const obsUrl = getPublicUrl(`/projector?mode=obs&account=${encodeURIComponent(currentAccountId)}`, currentAccountId);
 
   const fetchBibleChapter = async (book: string, chapter: number) => {
     setIsFetchingBible(true);
@@ -6721,7 +6725,10 @@ export default function OperatorDashboard() {
 
                     <button
                       onClick={() => {
-                        window.open(`/projector?account=${currentAccountId}`, "_blank");
+                        window.open(
+                          getPublicUrl(`/projector?account=${encodeURIComponent(currentAccountId)}`, currentAccountId),
+                          "_blank",
+                        );
                         setShowProjectionDropdown(false);
                       }}
                       className="w-full text-left px-3 py-2 hover:bg-[#141417] hover:border-[#cca000]/50 border border-transparent rounded-lg transition-all flex items-start gap-2.5 group cursor-pointer mt-1"
@@ -6736,6 +6743,41 @@ export default function OperatorDashboard() {
                         </div>
                       </div>
                     </button>
+
+                    <div className="w-full px-3 py-2 hover:bg-[#141417] hover:border-[#cca000]/50 border border-transparent rounded-lg transition-all flex items-center justify-between gap-2 group mt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.open(obsUrl, "_blank");
+                          setShowProjectionDropdown(false);
+                        }}
+                        className="flex-1 text-left flex items-start gap-2.5 cursor-pointer"
+                      >
+                        <Video className="w-4 h-4 text-[#f5cc00] mt-0.5 group-hover:scale-110 transition-transform shrink-0" />
+                        <div>
+                          <div className="text-[11px] font-black text-slate-100 group-hover:text-[#f5cc00] uppercase tracking-tight">
+                            Mode OBS (Live Output)
+                          </div>
+                          <div className="text-[9px] text-slate-400 leading-snug">
+                            Langsung dari Live Output
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard.writeText(obsUrl);
+                          showToast("Link Mode OBS berhasil disalin!", "success");
+                          setShowProjectionDropdown(false);
+                        }}
+                        title="Salin URL Browser Source OBS"
+                        className="px-2 py-1 rounded bg-[#000000] hover:bg-[#f5cc00] text-[#f5cc00] hover:text-[#000000] border border-[#27272a] hover:border-[#f5cc00] text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer shrink-0 transition-colors"
+                      >
+                        <Copy className="w-2.5 h-2.5" />
+                        Copy
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
@@ -11903,34 +11945,41 @@ export default function OperatorDashboard() {
                   {/* Instant Copy Link Button */}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-sans">
-                      1-Klik Link Proyektor (Browser Source OBS)
+                      1-Klik Link Mode OBS (Langsung Live Output)
                     </label>
                     <div className="flex gap-2">
                       <input
                         type="text"
                         readOnly
-                        value={getPublicUrl("/projector")}
+                        value={obsUrl}
                         className="flex-1 bg-[#09090b] border border-[#27272a] text-[#f5cc00] rounded-lg px-3 py-1.5 select-all font-mono text-[10px] outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => {
-                          const url = getPublicUrl("/projector");
-                          navigator.clipboard.writeText(url);
+                          navigator.clipboard.writeText(obsUrl);
                           showToast(
-                            "Link proyeksi berhasil disalin ke clipboard!",
+                            "Link Mode OBS berhasil disalin ke clipboard!",
                             "success",
                           );
                         }}
-                        className="px-3 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                        className="px-3 bg-[#f5cc00] hover:bg-[#ffd60a] text-[#000000] rounded-lg text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer shrink-0"
                       >
                         <Copy className="w-3 h-3" /> Salin Link
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => window.open(obsUrl, "_blank")}
+                        className="px-2.5 bg-[#09090b] hover:bg-[#141417] text-slate-200 hover:text-[#f5cc00] border border-[#27272a] hover:border-[#cca000]/60 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                        title="Buka tampilan Mode OBS di tab baru"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Buka
+                      </button>
                     </div>
                     <p className="text-[8px] text-slate-500 leading-normal">
-                      Copy link di atas, lalu tambahkan sebagai **Browser
-                      Source** di OBS Anda. Sinkronisasi berjalan otomatis
-                      secara instan.
+                      Link ini terhubung langsung ke **Live Output** (bukan
+                      Mobile Share, bebas kunci QR & batas shift). Tempelkan
+                      sebagai **Browser Source** di OBS Anda.
                     </p>
                   </div>
 

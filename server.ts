@@ -646,6 +646,7 @@ async function startServer() {
   const operatorAccountMap = new Map<string, string>();
   const operatorStatusMap = new Map<string, { active: boolean; isLive: boolean; ts: number }>();
   const currentSlideMap = new Map<string, any>();
+  const currentSettingsMap = new Map<string, any>();
   const currentShiftMap = new Map<string, any>();
 
   const hasActiveOperatorForAccount = (accountId: string) => {
@@ -665,6 +666,40 @@ async function startServer() {
       token: ""
     };
     return res.json(shift);
+  });
+
+  // GET endpoint to fetch current live output slide & settings directly (for OBS / Projector)
+  app.get("/api/live-output", (req: any, res: any) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    const accountId = (req.query.account as string) || "acc_default";
+    const slide = currentSlideMap.get(accountId) || null;
+    const settings = currentSettingsMap.get(accountId) || null;
+    const storedOpStatus = operatorStatusMap.get(accountId);
+    const hasOp = hasActiveOperatorForAccount(accountId);
+    const operatorStatus = storedOpStatus
+      ? storedOpStatus
+      : hasOp
+        ? { active: true, isLive: slide ? slide.isLive !== false : true, ts: Date.now() }
+        : slide
+          ? { active: true, isLive: slide.isLive !== false, ts: Date.now() }
+          : null;
+    return res.json({ slide, settings, operatorStatus });
+  });
+
+  // POST endpoint to persist & broadcast live output snapshot
+  app.post("/api/live-output", (req: any, res: any) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const accountId = (req.body?.accountId as string) || (req.query.account as string) || "acc_default";
+    if (req.body?.slide) {
+      currentSlideMap.set(accountId, req.body.slide);
+      io.to("room_" + accountId).emit("slide:update", req.body.slide);
+    }
+    if (req.body?.settings) {
+      currentSettingsMap.set(accountId, req.body.settings);
+      io.to("room_" + accountId).emit("settings:update", req.body.settings);
+    }
+    return res.json({ ok: true });
   });
 
   // API Endpoints: save uploaded background images/videos into the single dedicated folder (public/backgrounds)
@@ -2831,7 +2866,8 @@ ${text}
         operatorAccountMap.set(socket.id, clientAccountId);
       }
 
-      const slide = currentSlideMap.get(clientAccountId) || {
+      const storedSlide = currentSlideMap.get(clientAccountId);
+      const slide = storedSlide || {
         content: "Selamat Datang di Ibadah Hari Ini",
         title: "Welcome",
         background: "https://images.unsplash.com/photo-1438232992991-995b7058633e?auto=format&fit=crop&q=80&w=2069",
@@ -2844,6 +2880,7 @@ ${text}
         endTime: "",
         token: ""
       };
+      const storedSettings = currentSettingsMap.get(clientAccountId);
       const hasOp = hasActiveOperatorForAccount(clientAccountId);
       const storedOpStatus = operatorStatusMap.get(clientAccountId);
       const opStatus = hasOp
@@ -2854,7 +2891,14 @@ ${text}
           }
         : { active: false, isLive: false, ts: Date.now() };
 
-      socket.emit("slide:update", hasOp ? slide : { ...slide, isLive: false });
+      if (storedSlide) {
+        socket.emit("slide:update", hasOp ? storedSlide : storedSlide);
+      } else {
+        socket.emit("slide:update", { ...slide, isLive: false });
+      }
+      if (storedSettings) {
+        socket.emit("settings:update", storedSettings);
+      }
       socket.emit("shift:update", shift);
       socket.emit("operator:status", opStatus);
     });
@@ -2902,6 +2946,13 @@ ${text}
       const slide = data?.slide !== undefined ? data.slide : data;
       currentSlideMap.set(accId, slide);
       io.to("room_" + accId).emit("slide:update", slide);
+    });
+
+    socket.on("settings:change", (data: any) => {
+      const accId = data?.accountId || clientAccountId;
+      const settings = data?.settings !== undefined ? data.settings : data;
+      currentSettingsMap.set(accId, settings);
+      io.to("room_" + accId).emit("settings:update", settings);
     });
 
     socket.on("shift:change", (data: any) => {
