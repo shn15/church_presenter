@@ -15,6 +15,8 @@ export interface SyncedSettings {
   globalFontSizeScale?: number;
   globalTextShadowStyle?: string;
   chromaKeyColor?: string;
+  _syncTs?: number;
+  _syncSession?: string;
 }
 
 const MQTT_BROKERS = [

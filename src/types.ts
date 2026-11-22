@@ -7,6 +7,8 @@ export interface Slide {
   background?: string;
   type: 'lyrics' | 'scripture' | 'announcement' | 'qr' | 'logo';
   isLive?: boolean;
+  _syncTs?: number;
+  _syncSession?: string;
   
   // Custom Styling
   textColor?: string;

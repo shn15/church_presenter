@@ -687,17 +687,37 @@ async function startServer() {
     return res.json({ slide, settings, operatorStatus });
   });
 
+  const shouldAcceptMonotonicUpdate = (existing: any, incoming: any) => {
+    if (!existing || !incoming) return true;
+    if (
+      typeof existing._syncSession === "string" &&
+      typeof incoming._syncSession === "string" &&
+      existing._syncSession === incoming._syncSession &&
+      typeof existing._syncTs === "number" &&
+      typeof incoming._syncTs === "number"
+    ) {
+      return incoming._syncTs >= existing._syncTs;
+    }
+    return true;
+  };
+
   // POST endpoint to persist & broadcast live output snapshot
   app.post("/api/live-output", (req: any, res: any) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     const accountId = (req.body?.accountId as string) || (req.query.account as string) || "acc_default";
     if (req.body?.slide) {
-      currentSlideMap.set(accountId, req.body.slide);
-      io.to("room_" + accountId).emit("slide:update", req.body.slide);
+      const existingSlide = currentSlideMap.get(accountId);
+      if (shouldAcceptMonotonicUpdate(existingSlide, req.body.slide)) {
+        currentSlideMap.set(accountId, req.body.slide);
+        io.to("room_" + accountId).emit("slide:update", req.body.slide);
+      }
     }
     if (req.body?.settings) {
-      currentSettingsMap.set(accountId, req.body.settings);
-      io.to("room_" + accountId).emit("settings:update", req.body.settings);
+      const existingSettings = currentSettingsMap.get(accountId);
+      if (shouldAcceptMonotonicUpdate(existingSettings, req.body.settings)) {
+        currentSettingsMap.set(accountId, req.body.settings);
+        io.to("room_" + accountId).emit("settings:update", req.body.settings);
+      }
     }
     return res.json({ ok: true });
   });
@@ -2944,6 +2964,10 @@ ${text}
     socket.on("slide:change", (data: any) => {
       const accId = data?.accountId || clientAccountId;
       const slide = data?.slide !== undefined ? data.slide : data;
+      const existingSlide = currentSlideMap.get(accId);
+      if (!shouldAcceptMonotonicUpdate(existingSlide, slide)) {
+        return;
+      }
       currentSlideMap.set(accId, slide);
       io.to("room_" + accId).emit("slide:update", slide);
     });
@@ -2951,6 +2975,10 @@ ${text}
     socket.on("settings:change", (data: any) => {
       const accId = data?.accountId || clientAccountId;
       const settings = data?.settings !== undefined ? data.settings : data;
+      const existingSettings = currentSettingsMap.get(accId);
+      if (!shouldAcceptMonotonicUpdate(existingSettings, settings)) {
+        return;
+      }
       currentSettingsMap.set(accId, settings);
       io.to("room_" + accId).emit("settings:update", settings);
     });
@@ -2973,7 +3001,8 @@ ${text}
           io.to("room_" + opAcc).emit("operator:status", offlineStatus);
           const slide = currentSlideMap.get(opAcc);
           if (slide) {
-            const updatedSlide = { ...slide, isLive: false };
+            const nextTs = Math.max(Date.now(), (typeof slide._syncTs === "number" ? slide._syncTs : 0) + 1);
+            const updatedSlide = { ...slide, isLive: false, _syncTs: nextTs };
             currentSlideMap.set(opAcc, updatedSlide);
             io.to("room_" + opAcc).emit("slide:update", updatedSlide);
           }

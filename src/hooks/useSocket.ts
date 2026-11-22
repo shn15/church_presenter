@@ -133,7 +133,69 @@ export const useSocket = (explicitAccountId?: string) => {
     return undefined;
   }, []);
 
-  const applyIncomingSlide = useCallback((slide: Slide) => {
+  const operatorSessionId = useMemo(
+    () => `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    []
+  );
+  const lastSentSlideTsRef = useRef<number>(0);
+  const lastSentSettingsTsRef = useRef<number>(0);
+  const lastAppliedSlideMetaRef = useRef<{ ts: number; session?: string }>({ ts: 0 });
+  const lastAppliedSettingsMetaRef = useRef<{ ts: number; session?: string }>({ ts: 0 });
+  const lastLiveSlideAtRef = useRef<number>(0);
+
+  const shouldAcceptMeta = useCallback(
+    (
+      metaRef: { current: { ts: number; session?: string } },
+      incomingTs: number | undefined,
+      incomingSession: string | undefined,
+      isPoll: boolean
+    ) => {
+      const ts = typeof incomingTs === "number" ? incomingTs : 0;
+      const prev = metaRef.current;
+      if (ts > 0 && prev.ts > 0) {
+        if (incomingSession && prev.session && incomingSession === prev.session) {
+          if (isPoll ? ts <= prev.ts : ts < prev.ts) {
+            return false;
+          }
+        } else {
+          if (isPoll && Date.now() - lastLiveSlideAtRef.current < 2000 && ts <= prev.ts) {
+            return false;
+          }
+          if (ts < prev.ts - 15000) {
+            return false;
+          }
+        }
+      }
+      if (ts > 0) {
+        metaRef.current = {
+          ts:
+            incomingSession && prev.session && incomingSession !== prev.session
+              ? ts
+              : Math.max(prev.ts, ts),
+          session: incomingSession || prev.session,
+        };
+      }
+      return true;
+    },
+    []
+  );
+
+  const applyIncomingSlide = useCallback((slide: Slide, options?: { fromPoll?: boolean }) => {
+    if (!slide) return;
+    const isPoll = Boolean(options?.fromPoll);
+    if (
+      !shouldAcceptMeta(
+        lastAppliedSlideMetaRef,
+        slide._syncTs,
+        slide._syncSession,
+        isPoll
+      )
+    ) {
+      return;
+    }
+    if (!isPoll) {
+      lastLiveSlideAtRef.current = Date.now();
+    }
     hasReceivedLiveSlideRef.current = true;
     const cleaned = cleanSlideForBroadcast(slide);
     latestSlideRef.current = cleaned;
@@ -146,7 +208,7 @@ export const useSocket = (explicitAccountId?: string) => {
     try {
       setItemAccount("cp_current_slide", JSON.stringify(cleaned), targetAccountId);
     } catch {}
-  }, [targetAccountId]);
+  }, [targetAccountId, shouldAcceptMeta]);
 
   const applyIncomingShift = useCallback((shift: Shift) => {
     setCurrentShift((prev) => {
@@ -160,7 +222,18 @@ export const useSocket = (explicitAccountId?: string) => {
     } catch {}
   }, [targetAccountId]);
 
-  const applyIncomingSettings = useCallback((settings: SyncedSettings) => {
+  const applyIncomingSettings = useCallback((settings: SyncedSettings, options?: { fromPoll?: boolean }) => {
+    if (!settings) return;
+    if (
+      !shouldAcceptMeta(
+        lastAppliedSettingsMetaRef,
+        settings._syncTs,
+        settings._syncSession,
+        Boolean(options?.fromPoll)
+      )
+    ) {
+      return;
+    }
     latestSettingsRef.current = settings;
     setSyncedSettings((prev) => {
       if (prev && JSON.stringify(prev) === JSON.stringify(settings)) {
@@ -179,7 +252,7 @@ export const useSocket = (explicitAccountId?: string) => {
       if (settings.globalTextShadowStyle) localStorage.setItem("cp_settings_text_shadow_style", settings.globalTextShadowStyle);
       if (settings.chromaKeyColor) localStorage.setItem("cp_settings_chroma_key_color", settings.chromaKeyColor);
     } catch {}
-  }, [targetAccountId]);
+  }, [targetAccountId, shouldAcceptMeta]);
 
   const applyIncomingOperatorStatus = useCallback((status: { active: boolean; isLive: boolean }) => {
     if (status.active) {
@@ -225,8 +298,9 @@ export const useSocket = (explicitAccountId?: string) => {
     if (shouldTrySocketIo) {
       newSocket = io(targetServerUrl || undefined, {
         transports: ["websocket", "polling"],
-        reconnectionAttempts: 5,
-        reconnectionDelay: 2000,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
         timeout: 8000,
         autoConnect: true,
       });
@@ -351,26 +425,52 @@ export const useSocket = (explicitAccountId?: string) => {
       }
     }
 
-    // 5. Viewer-side initial HTTP live-output snapshot & liveness detection
+    // 5. Viewer-side resilient HTTP live-output snapshot + periodic fallback polling & liveness detection
     let initialTimeout: number | undefined;
     let livenessInterval: number | undefined;
+    let pollTimeout: number | undefined;
+    let pollStopped = false;
+    let isFetchingSnapshot = false;
+
     if (!isOperatorContext && typeof window !== "undefined") {
       const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
-      fetch(`${apiBase}/api/live-output?account=${encodeURIComponent(targetAccountId)}`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (!data) return;
+      const params = new URLSearchParams(window.location.search);
+      const isObsView = params.get("mode") === "obs" || params.get("obs") === "1";
+
+      const fetchLiveSnapshot = async (isInitial: boolean) => {
+        if (pollStopped || isFetchingSnapshot) return;
+        isFetchingSnapshot = true;
+        try {
+          const res = await fetch(
+            `${apiBase}/api/live-output?account=${encodeURIComponent(targetAccountId)}`,
+            { cache: "no-store" }
+          );
+          if (pollStopped || !res.ok) return;
+          const data = await res.json();
+          if (pollStopped || !data) return;
           if (data.settings) {
-            applyIncomingSettings(data.settings);
+            applyIncomingSettings(data.settings, { fromPoll: !isInitial });
           }
-          if (data.slide && !hasReceivedLiveSlideRef.current) {
-            applyIncomingSlide(data.slide);
+          if (data.slide) {
+            applyIncomingSlide(data.slide, { fromPoll: !isInitial });
           }
           if (data.operatorStatus) {
             applyIncomingOperatorStatus(data.operatorStatus);
           }
-        })
-        .catch(() => {});
+        } catch {
+          // Silent fallback retry on next tick
+        } finally {
+          isFetchingSnapshot = false;
+          if (!pollStopped) {
+            const nextDelay = isObsView || !socketRef.current?.connected ? 900 : 3000;
+            pollTimeout = window.setTimeout(() => {
+              void fetchLiveSnapshot(false);
+            }, nextDelay);
+          }
+        }
+      };
+
+      void fetchLiveSnapshot(true);
 
       try {
         const storedStatus = localStorage.getItem(`cp_operator_status_${targetAccountId}`);
@@ -396,6 +496,8 @@ export const useSocket = (explicitAccountId?: string) => {
     }
 
     return () => {
+      pollStopped = true;
+      if (pollTimeout) window.clearTimeout(pollTimeout);
       if (initialTimeout) window.clearTimeout(initialTimeout);
       if (livenessInterval) window.clearInterval(livenessInterval);
       cloud.destroy();
@@ -412,7 +514,14 @@ export const useSocket = (explicitAccountId?: string) => {
   }, [targetAccountId, targetServerUrl, syncRoomId, isOperatorContext, applyIncomingSlide, applyIncomingShift, applyIncomingSettings, applyIncomingOperatorStatus]);
 
   const changeSlide = useCallback((slide: Slide) => {
-    const cleaned = cleanSlideForBroadcast(slide);
+    const syncTs = Math.max(Date.now(), lastSentSlideTsRef.current + 1);
+    lastSentSlideTsRef.current = syncTs;
+    const cleaned = cleanSlideForBroadcast({
+      ...slide,
+      _syncTs: syncTs,
+      _syncSession: operatorSessionId,
+    });
+    lastAppliedSlideMetaRef.current = { ts: syncTs, session: operatorSessionId };
     latestSlideRef.current = cleaned;
     setCurrentSlide(cleaned);
     try {
@@ -441,7 +550,7 @@ export const useSocket = (explicitAccountId?: string) => {
         keepalive: true,
       }).catch(() => {});
     }
-  }, [socket, targetAccountId, isOperatorContext, targetServerUrl]);
+  }, [socket, targetAccountId, isOperatorContext, targetServerUrl, operatorSessionId]);
 
   const updateShift = useCallback((shift: Shift) => {
     setCurrentShift(shift);
@@ -464,28 +573,35 @@ export const useSocket = (explicitAccountId?: string) => {
   }, [socket, targetAccountId]);
 
   const syncSettings = useCallback((settings: SyncedSettings) => {
-    latestSettingsRef.current = settings;
-    applyIncomingSettings(settings);
+    const syncTs = Math.max(Date.now(), lastSentSettingsTsRef.current + 1);
+    lastSentSettingsTsRef.current = syncTs;
+    const stampedSettings: SyncedSettings = {
+      ...settings,
+      _syncTs: syncTs,
+      _syncSession: operatorSessionId,
+    };
+    latestSettingsRef.current = stampedSettings;
+    applyIncomingSettings(stampedSettings);
     if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
       const channel = new BroadcastChannel(`church_presenter_sync_${targetAccountId}`);
-      channel.postMessage({ type: "settings:update", settings });
+      channel.postMessage({ type: "settings:update", settings: stampedSettings });
       channel.close();
     }
     const activeSocket = socketRef.current || socket;
     if (activeSocket?.connected) {
-      activeSocket.emit("settings:change", { accountId: targetAccountId, settings });
+      activeSocket.emit("settings:change", { accountId: targetAccountId, settings: stampedSettings });
     }
-    cloudRef.current?.publishSettings(settings);
+    cloudRef.current?.publishSettings(stampedSettings);
     if (isOperatorContext && typeof window !== "undefined") {
       const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
       fetch(`${apiBase}/api/live-output`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: targetAccountId, settings }),
+        body: JSON.stringify({ accountId: targetAccountId, settings: stampedSettings }),
         keepalive: true,
       }).catch(() => {});
     }
-  }, [targetAccountId, applyIncomingSettings, socket, isOperatorContext, targetServerUrl]);
+  }, [targetAccountId, applyIncomingSettings, socket, isOperatorContext, targetServerUrl, operatorSessionId]);
 
   const requestCloudMedia = useCallback((url: string) => {
     cloudRef.current?.requestMediaTransfer(url);

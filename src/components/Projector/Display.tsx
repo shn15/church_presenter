@@ -1100,6 +1100,8 @@ export default function ProjectorDisplay() {
     animationSpeedValue,
   );
 
+  const slideRenderKey = `${currentSlide.parentId || ""}-${currentSlide.slideIdx ?? ""}-${currentSlide.title || ""}-${currentSlide.content || ""}-${currentSlide.type}-${slideTransitionValue}-${textAnimationValue}-${animationSpeedValue}`;
+
   const renderAnimatedLines = (rawText: string, wrapQuotes = false) => {
     const formatted = wrapQuotes ? `"${rawText}"` : rawText;
     if (!textAnimationValue || textAnimationValue === "none") {
@@ -1122,7 +1124,7 @@ export default function ProjectorDisplay() {
       }
       return (
         <motion.span
-          key={`${currentSlide.content}-${textAnimationValue}-${animationSpeedValue}-${idx}`}
+          key={`${slideRenderKey}-${idx}`}
           initial={lineMotion.initial}
           animate={lineMotion.animate}
           transition={lineMotion.transition}
@@ -1161,19 +1163,11 @@ export default function ProjectorDisplay() {
         const bgKey = extractMediaPath(rawBg) || rawBg;
         const resolvedBgSrc = resolveMedia(rawBg);
 
-        return (
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={bgKey}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.8 }}
-              className="absolute inset-0 z-0"
-            >
-              {(() => {
-                const bg = rawBg;
-                if (!bg) return null;
+        const bgContent = (
+          <>
+            {(() => {
+              const bg = rawBg;
+              if (!bg) return null;
 
               const isColor = bg.startsWith("#") || bg.startsWith("rgb") || bg.startsWith("linear-gradient") || bg === "transparent";
               if (isColor) {
@@ -1225,8 +1219,36 @@ export default function ProjectorDisplay() {
               );
             })()}
             <div className={`absolute inset-0 bg-gradient-to-t ${isLight ? 'from-white/10 via-transparent to-white/5' : 'from-black/85 via-transparent to-black/45'}`} />
-          </motion.div>
-        </AnimatePresence>
+          </>
+        );
+
+        if (isObsMode) {
+          return (
+            <motion.div
+              key={bgKey}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.45 }}
+              className="absolute inset-0 z-0"
+            >
+              {bgContent}
+            </motion.div>
+          );
+        }
+
+        return (
+          <AnimatePresence mode="sync" initial={false}>
+            <motion.div
+              key={bgKey}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.25 } }}
+              transition={{ duration: 0.5 }}
+              className="absolute inset-0 z-0"
+            >
+              {bgContent}
+            </motion.div>
+          </AnimatePresence>
         );
       })()}
 
@@ -1298,14 +1320,9 @@ export default function ProjectorDisplay() {
           : `z-10 flex flex-col justify-center ${alignClass}`
         }
       >
-        <div className={lowerThirdMode ? `w-full max-w-[90%] flex flex-col ${alignClass}` : "w-full h-full flex flex-col justify-center"}>
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={`${currentSlide.content || ""}-${currentSlide.type}-${slideTransitionValue}-${animationSpeedValue}`}
-              {...motionProps}
-              style={{ perspective: 1200 }}
-              className="w-full h-full flex flex-col justify-center"
-            >
+        <div className={lowerThirdMode ? `w-full max-w-[90%] flex flex-col ${alignClass}` : "relative w-full h-full flex flex-col justify-center"}>
+          {(() => {
+            const slideContentBody = (
               <div style={{ perspective: 1000 }} className="w-full">
               {currentSlide.type === 'lyrics' && currentSlide.content && (
                 <div className={lowerThirdMode ? "bg-black/75 backdrop-blur-md px-10 py-5 rounded-2xl shadow-xl w-full text-center border border-white/10" : "w-full"}>
@@ -1386,8 +1403,49 @@ export default function ProjectorDisplay() {
                 );
               })()}
               </div>
-            </motion.div>
-          </AnimatePresence>
+            );
+
+            if (isObsMode) {
+              return (
+                <motion.div
+                  key={slideRenderKey}
+                  initial={motionProps.initial}
+                  animate={motionProps.animate}
+                  transition={motionProps.transition}
+                  style={{ perspective: 1200 }}
+                  className={lowerThirdMode ? "w-full flex flex-col justify-center" : "w-full h-full flex flex-col justify-center"}
+                >
+                  {slideContentBody}
+                </motion.div>
+              );
+            }
+
+            return (
+              <AnimatePresence mode="sync" initial={false}>
+                <motion.div
+                  key={slideRenderKey}
+                  initial={motionProps.initial}
+                  animate={motionProps.animate}
+                  exit={
+                    slideTransitionValue === "none"
+                      ? { opacity: 0, transition: { duration: 0 } }
+                      : lowerThirdMode
+                        ? { opacity: 0, height: 0, overflow: "hidden", transition: { duration: 0.12 } }
+                        : { opacity: 0, transition: { duration: 0.16 } }
+                  }
+                  transition={motionProps.transition}
+                  style={{ perspective: 1200 }}
+                  className={
+                    lowerThirdMode
+                      ? "w-full flex flex-col justify-center"
+                      : "absolute inset-0 w-full h-full flex flex-col justify-center"
+                  }
+                >
+                  {slideContentBody}
+                </motion.div>
+              </AnimatePresence>
+            );
+          })()}
         </div>
       </div>
 

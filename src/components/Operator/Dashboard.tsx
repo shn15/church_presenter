@@ -6431,10 +6431,17 @@ export default function OperatorDashboard() {
                     };
 
                     return (
-                      <AnimatePresence mode="wait">
+                      <AnimatePresence mode="sync" initial={false}>
                         <motion.div
                           key={monitorAnimKey}
-                          {...monitorMotionProps}
+                          initial={monitorMotionProps.initial}
+                          animate={monitorMotionProps.animate}
+                          exit={
+                            slideTransPreset === "none"
+                              ? { opacity: 0, transition: { duration: 0 } }
+                              : { opacity: 0, transition: { duration: 0.16 } }
+                          }
+                          transition={monitorMotionProps.transition}
                           style={{ perspective: 1000 }}
                           className="absolute inset-0 w-full h-full pointer-events-none"
                         >
