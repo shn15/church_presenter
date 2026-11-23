@@ -142,10 +142,12 @@ export const useSocket = (explicitAccountId?: string) => {
   const lastAppliedSlideMetaRef = useRef<{ ts: number; session?: string }>({ ts: 0 });
   const lastAppliedSettingsMetaRef = useRef<{ ts: number; session?: string }>({ ts: 0 });
   const lastLiveSlideAtRef = useRef<number>(0);
+  const lastLiveSettingsAtRef = useRef<number>(0);
 
   const shouldAcceptMeta = useCallback(
     (
       metaRef: { current: { ts: number; session?: string } },
+      lastLiveAtRef: { current: number },
       incomingTs: number | undefined,
       incomingSession: string | undefined,
       isPoll: boolean
@@ -158,7 +160,7 @@ export const useSocket = (explicitAccountId?: string) => {
             return false;
           }
         } else {
-          if (isPoll && Date.now() - lastLiveSlideAtRef.current < 2000 && ts <= prev.ts) {
+          if (isPoll && Date.now() - lastLiveAtRef.current < 2000 && ts <= prev.ts) {
             return false;
           }
           if (ts < prev.ts - 15000) {
@@ -186,6 +188,7 @@ export const useSocket = (explicitAccountId?: string) => {
     if (
       !shouldAcceptMeta(
         lastAppliedSlideMetaRef,
+        lastLiveSlideAtRef,
         slide._syncTs,
         slide._syncSession,
         isPoll
@@ -224,15 +227,20 @@ export const useSocket = (explicitAccountId?: string) => {
 
   const applyIncomingSettings = useCallback((settings: SyncedSettings, options?: { fromPoll?: boolean }) => {
     if (!settings) return;
+    const isPoll = Boolean(options?.fromPoll);
     if (
       !shouldAcceptMeta(
         lastAppliedSettingsMetaRef,
+        lastLiveSettingsAtRef,
         settings._syncTs,
         settings._syncSession,
-        Boolean(options?.fromPoll)
+        isPoll
       )
     ) {
       return;
+    }
+    if (!isPoll) {
+      lastLiveSettingsAtRef.current = Date.now();
     }
     latestSettingsRef.current = settings;
     setSyncedSettings((prev) => {
@@ -251,6 +259,14 @@ export const useSocket = (explicitAccountId?: string) => {
       if (settings.globalFontSizeScale !== undefined) localStorage.setItem("cp_settings_font_size_scale", String(settings.globalFontSizeScale));
       if (settings.globalTextShadowStyle) localStorage.setItem("cp_settings_text_shadow_style", settings.globalTextShadowStyle);
       if (settings.chromaKeyColor) localStorage.setItem("cp_settings_chroma_key_color", settings.chromaKeyColor);
+      if (settings.cameraBgEnabled !== undefined) localStorage.setItem("cp_settings_camera_bg_enabled", String(settings.cameraBgEnabled));
+      if (settings.cameraBgDeviceId !== undefined) localStorage.setItem("cp_settings_camera_bg_device_id", settings.cameraBgDeviceId);
+      if (settings.cameraBgLabel !== undefined) localStorage.setItem("cp_settings_camera_bg_label", settings.cameraBgLabel);
+      if (settings.cameraBgMirror !== undefined) localStorage.setItem("cp_settings_camera_bg_mirror", String(settings.cameraBgMirror));
+      if (settings.cameraBgBrightness !== undefined) localStorage.setItem("cp_settings_camera_bg_brightness", String(settings.cameraBgBrightness));
+      if (settings.cameraBgOpacity !== undefined) localStorage.setItem("cp_settings_camera_bg_opacity", String(settings.cameraBgOpacity));
+      if (settings.cameraBgBlur !== undefined) localStorage.setItem("cp_settings_camera_bg_blur", String(settings.cameraBgBlur));
+      if (settings.cameraBgFit !== undefined) localStorage.setItem("cp_settings_camera_bg_fit", settings.cameraBgFit);
     } catch {}
   }, [targetAccountId, shouldAcceptMeta]);
 
@@ -407,6 +423,12 @@ export const useSocket = (explicitAccountId?: string) => {
             type: "operator:status",
             status: latestOperatorStatusRef.current,
           });
+          if (latestSettingsRef.current) {
+            channel?.postMessage({
+              type: "settings:update",
+              settings: latestSettingsRef.current,
+            });
+          }
           if (latestOperatorStatusRef.current.active && latestSlideRef.current) {
             channel?.postMessage({
               type: "slide:update",
@@ -431,6 +453,7 @@ export const useSocket = (explicitAccountId?: string) => {
     let pollTimeout: number | undefined;
     let pollStopped = false;
     let isFetchingSnapshot = false;
+    let handleVisibilityOrFocus: (() => void) | null = null;
 
     if (!isOperatorContext && typeof window !== "undefined") {
       const apiBase = targetServerUrl ? targetServerUrl.replace(/\/$/, "") : "";
@@ -462,7 +485,11 @@ export const useSocket = (explicitAccountId?: string) => {
         } finally {
           isFetchingSnapshot = false;
           if (!pollStopped) {
-            const nextDelay = isObsView || !socketRef.current?.connected ? 900 : 3000;
+            const nextDelay = !socketRef.current?.connected
+              ? 450
+              : isObsView
+                ? 1100
+                : 2500;
             pollTimeout = window.setTimeout(() => {
               void fetchLiveSnapshot(false);
             }, nextDelay);
@@ -471,6 +498,21 @@ export const useSocket = (explicitAccountId?: string) => {
       };
 
       void fetchLiveSnapshot(true);
+
+      handleVisibilityOrFocus = () => {
+        if (pollStopped) return;
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return;
+        }
+        if (socketRef.current?.connected) {
+          socketRef.current.emit("join:account", { accountId: targetAccountId });
+        }
+        void fetchLiveSnapshot(false);
+      };
+      window.addEventListener("focus", handleVisibilityOrFocus);
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+      }
 
       try {
         const storedStatus = localStorage.getItem(`cp_operator_status_${targetAccountId}`);
@@ -500,6 +542,12 @@ export const useSocket = (explicitAccountId?: string) => {
       if (pollTimeout) window.clearTimeout(pollTimeout);
       if (initialTimeout) window.clearTimeout(initialTimeout);
       if (livenessInterval) window.clearInterval(livenessInterval);
+      if (handleVisibilityOrFocus && typeof window !== "undefined") {
+        window.removeEventListener("focus", handleVisibilityOrFocus);
+        if (typeof document !== "undefined") {
+          document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+        }
+      }
       cloud.destroy();
       cloudRef.current = null;
       newSocket?.disconnect();

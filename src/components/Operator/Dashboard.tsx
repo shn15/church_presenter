@@ -66,7 +66,15 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  Camera,
+  RefreshCw,
+  FlipHorizontal,
 } from "lucide-react";
+import {
+  CameraFeed,
+  CameraDeviceInfo,
+  detectCameraDevices,
+} from "../CameraFeed";
 import {
   BIBLE_BOOKS,
   BIBLE_BOOKS_BATAK,
@@ -487,7 +495,7 @@ export default function OperatorDashboard() {
     mediaUpdateTick,
     notifyMediaUpdated,
     publishOperatorStatus,
-  } = useSocket();
+  } = useSocket(currentAccountId);
   const changeSlide = useCallback(
     (slide: Slide) => {
       const hasLive = "isLive" in slide;
@@ -1110,7 +1118,96 @@ export default function OperatorDashboard() {
     const saved = localStorage.getItem("cp_settings_chroma_key_color");
     return saved || "transparent";
   });
+  const [cameraBgEnabled, setCameraBgEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("cp_settings_camera_bg_enabled") === "true";
+  });
+  const [cameraBgDeviceId, setCameraBgDeviceId] = useState<string>(() => {
+    return localStorage.getItem("cp_settings_camera_bg_device_id") || "";
+  });
+  const [cameraBgLabel, setCameraBgLabel] = useState<string>(() => {
+    return localStorage.getItem("cp_settings_camera_bg_label") || "";
+  });
+  const [cameraBgMirror, setCameraBgMirror] = useState<boolean>(() => {
+    return localStorage.getItem("cp_settings_camera_bg_mirror") === "true";
+  });
+  const [cameraBgBrightness, setCameraBgBrightness] = useState<number>(() => {
+    const saved = localStorage.getItem("cp_settings_camera_bg_brightness");
+    return saved ? parseInt(saved, 10) : 85;
+  });
+  const [cameraBgOpacity, setCameraBgOpacity] = useState<number>(() => {
+    const saved = localStorage.getItem("cp_settings_camera_bg_opacity");
+    return saved ? parseInt(saved, 10) : 100;
+  });
+  const [cameraBgBlur, setCameraBgBlur] = useState<number>(() => {
+    const saved = localStorage.getItem("cp_settings_camera_bg_blur");
+    return saved ? parseInt(saved, 10) : 0;
+  });
+  const [cameraBgFit, setCameraBgFit] = useState<"cover" | "contain">(() => {
+    return localStorage.getItem("cp_settings_camera_bg_fit") === "contain"
+      ? "contain"
+      : "cover";
+  });
+  const [detectedCameras, setDetectedCameras] = useState<CameraDeviceInfo[]>(
+    [],
+  );
+  const [isDetectingCameras, setIsDetectingCameras] = useState(false);
+  const [cameraDetectError, setCameraDetectError] = useState<string | null>(
+    null,
+  );
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => getUiTheme());
+
+  const handleDetectCameras = useCallback(
+    async (requestPermission = true, autoSelectFirst = false) => {
+      setIsDetectingCameras(true);
+      setCameraDetectError(null);
+      try {
+        const result = await detectCameraDevices(requestPermission);
+        setDetectedCameras(result.devices);
+        if (result.permissionError) {
+          setCameraDetectError(result.permissionError);
+        }
+        if (result.devices.length > 0) {
+          if (autoSelectFirst && !cameraBgDeviceId) {
+            const first = result.devices[0];
+            setCameraBgDeviceId(first.deviceId);
+            setCameraBgLabel(first.label);
+            localStorage.setItem("cp_settings_camera_bg_device_id", first.deviceId);
+            localStorage.setItem("cp_settings_camera_bg_label", first.label);
+          } else if (cameraBgDeviceId) {
+            const matched = result.devices.find(
+              (d) =>
+                d.deviceId === cameraBgDeviceId ||
+                (cameraBgLabel && d.label === cameraBgLabel),
+            );
+            if (matched && matched.label !== cameraBgLabel) {
+              setCameraBgLabel(matched.label);
+              localStorage.setItem("cp_settings_camera_bg_label", matched.label);
+            }
+          }
+        }
+      } finally {
+        setIsDetectingCameras(false);
+      }
+    },
+    [cameraBgDeviceId, cameraBgLabel],
+  );
+
+  useEffect(() => {
+    void handleDetectCameras(false, false);
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.addEventListener
+    ) {
+      return;
+    }
+    const onDeviceChange = () => {
+      void handleDetectCameras(false, false);
+    };
+    navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
+    };
+  }, [handleDetectCameras]);
 
   useEffect(() => {
     setUiTheme(uiTheme);
@@ -1144,6 +1241,14 @@ export default function OperatorDashboard() {
       globalFontSizeScale,
       globalTextShadowStyle,
       chromaKeyColor,
+      cameraBgEnabled,
+      cameraBgDeviceId,
+      cameraBgLabel,
+      cameraBgMirror,
+      cameraBgBrightness,
+      cameraBgOpacity,
+      cameraBgBlur,
+      cameraBgFit,
     });
   }, [
     syncSettings,
@@ -1155,6 +1260,14 @@ export default function OperatorDashboard() {
     globalFontSizeScale,
     globalTextShadowStyle,
     chromaKeyColor,
+    cameraBgEnabled,
+    cameraBgDeviceId,
+    cameraBgLabel,
+    cameraBgMirror,
+    cameraBgBrightness,
+    cameraBgOpacity,
+    cameraBgBlur,
+    cameraBgFit,
   ]);
 
   const [isAutoPlay, setIsAutoPlay] = useState(false);
@@ -3949,6 +4062,10 @@ export default function OperatorDashboard() {
 
   const handleBackgroundSelect = (bg: string) => {
     setActiveBackground(bg);
+    if (cameraBgEnabled) {
+      setCameraBgEnabled(false);
+      localStorage.setItem("cp_settings_camera_bg_enabled", "false");
+    }
 
     // Identify the active item's ID
     const activeId = previewSlide?.parentId || selectedSong?.id;
@@ -5855,26 +5972,26 @@ export default function OperatorDashboard() {
             </div>
           </div>
 
-          {/* Fixed Footer: Background Themes Folders */}
+          {/* Fixed Footer: Background Themes Folders & Camera Device Input */}
           <div className="p-4 bg-[#09090b] border border-[#27272a] rounded-xl flex-shrink-0">
-            <div className="flex justify-between items-center mb-3">
+            <div className="flex justify-between items-center mb-3 gap-2">
               <div className="flex gap-4">
                 <button
                   onClick={() => setBgTab("images")}
-                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "images" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
+                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all cursor-pointer ${bgTab === "images" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
                 >
                   <FolderOpen className="w-3.5 h-3.5" /> Images Folder
                 </button>
                 <button
                   onClick={() => setBgTab("videos")}
-                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all ${bgTab === "videos" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
+                  className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 pb-1 border-b-2 transition-all cursor-pointer ${bgTab === "videos" ? "text-[#f5cc00] border-[#f5cc00] font-extrabold" : "text-slate-400 border-transparent hover:text-slate-200"}`}
                 >
                   <Video className="w-3.5 h-3.5" /> Videos Folder
                 </button>
               </div>
               <button
                 onClick={handleAddBackground}
-                className="text-[9px] font-bold text-[#cca000] hover:text-[#f5cc00] transition-all uppercase tracking-wider flex items-center gap-1"
+                className="text-[9px] font-bold text-[#cca000] hover:text-[#f5cc00] transition-all uppercase tracking-wider flex items-center gap-1 cursor-pointer"
               >
                 <Plus className="w-3 h-3" /> Add Background
               </button>
@@ -5894,7 +6011,7 @@ export default function OperatorDashboard() {
                   <button
                     key={idx}
                     onClick={() => handleBackgroundSelect(bg)}
-                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group ${activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
+                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group ${!cameraBgEnabled && activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
                   >
                     <img
                       src={resolveMedia(bg)}
@@ -5912,7 +6029,7 @@ export default function OperatorDashboard() {
                   <button
                     key={idx}
                     onClick={() => handleBackgroundSelect(bg)}
-                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group bg-black/40 ${activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
+                    className={`slide-canvas-preserve h-14 aspect-video rounded-lg overflow-hidden border transition-all flex-shrink-0 relative group bg-black/40 ${!cameraBgEnabled && activeBackground === bg ? "border-[#f5cc00] scale-95 shadow-[0_0_12px_rgba(245,204,0,0.35)]" : "border-[#27272a] opacity-65 hover:opacity-100"}`}
                   >
                     <video
                       src={resolveMedia(bg)}
@@ -5948,13 +6065,39 @@ export default function OperatorDashboard() {
             </div>
             <div
               onContextMenu={(e) => handleContextMenu(e, "live_preview", null)}
-              className={`slide-canvas-preserve ${outputResolution === "4:3" ? "aspect-[4/3]" : "aspect-video"} ${lowerThirdMode ? (chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent border border-white/10") : "bg-black"} rounded-lg border border-[#27272a] flex items-center justify-center p-4 relative group cursor-pointer overflow-hidden shadow-2xl @container`}
+              className={`slide-canvas-preserve ${outputResolution === "4:3" ? "aspect-[4/3]" : "aspect-video"} ${
+                cameraBgEnabled && chromaKeyColor !== "green"
+                  ? "bg-black"
+                  : lowerThirdMode
+                    ? chromaKeyColor === "green"
+                      ? "bg-[#00ff00]"
+                      : "bg-transparent border border-white/10"
+                    : "bg-black"
+              } rounded-lg border border-[#27272a] flex items-center justify-center p-4 relative group cursor-pointer overflow-hidden shadow-2xl @container`}
               style={{ containerType: "inline-size" }}
             >
+              {cameraBgEnabled && chromaKeyColor !== "green" && (
+                <div className="absolute inset-0 z-0 pointer-events-none">
+                  <CameraFeed
+                    deviceId={cameraBgDeviceId}
+                    deviceLabel={cameraBgLabel}
+                    mirror={cameraBgMirror}
+                    fit={cameraBgFit}
+                    brightness={cameraBgBrightness}
+                    opacity={cameraBgOpacity}
+                    blur={cameraBgBlur}
+                    className="w-full h-full"
+                    showErrorFallback={true}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/35 pointer-events-none" />
+                </div>
+              )}
+
               {masterOverride === "logo" ||
               (isLive && currentSlide?.type === "logo") ? (
                 <>
-                  {!lowerThirdMode &&
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode &&
                     (() => {
                       const logoBg =
                         currentSlide?.type === "logo"
@@ -5983,9 +6126,10 @@ export default function OperatorDashboard() {
                         />
                       );
                     })()}
-                  {!lowerThirdMode && (
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30 pointer-events-none z-[1]" />
-                  )}
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode && (
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30 pointer-events-none z-[1]" />
+                    )}
                   <div className="absolute inset-0 z-10 flex items-center justify-center p-2 pointer-events-none">
                     <AppLogo
                       className="w-20 h-20 drop-shadow-[0_6px_18px_rgba(0,0,0,0.85)]"
@@ -5996,7 +6140,8 @@ export default function OperatorDashboard() {
               ) : masterOverride === "qr" ||
                 (isLive && currentSlide?.type === "qr") ? (
                 <>
-                  {!lowerThirdMode &&
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode &&
                     activeBackground &&
                     (isVideo(activeBackground) ? (
                       <video
@@ -6034,7 +6179,9 @@ export default function OperatorDashboard() {
                   currentSlide?.content === "" &&
                   currentSlide?.type === "announcement" &&
                   !currentSlide?.background) ? (
-                <div className="absolute inset-0 z-0 bg-black" />
+                !(cameraBgEnabled && chromaKeyColor !== "green") ? (
+                  <div className="absolute inset-0 z-0 bg-black" />
+                ) : null
               ) : masterOverride === "clear" ||
                 (isLive &&
                   !currentSlide?.content &&
@@ -6042,7 +6189,8 @@ export default function OperatorDashboard() {
                   currentSlide?.type === "announcement" &&
                   currentSlide?.background) ? (
                 <>
-                  {!lowerThirdMode &&
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode &&
                     activeBackground &&
                     (isVideo(activeBackground) ? (
                       <video
@@ -6067,7 +6215,8 @@ export default function OperatorDashboard() {
               ) : (
                 <>
                   {/* Background Rendering with complete tuning properties support */}
-                  {!lowerThirdMode &&
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode &&
                     (() => {
                       const bg = isLive
                         ? currentSlide?.backgroundOverride ||
@@ -6140,7 +6289,8 @@ export default function OperatorDashboard() {
                     })()}
 
                   {/* Gradient Overlay mirroring the Projector */}
-                  {!lowerThirdMode &&
+                  {!(cameraBgEnabled && chromaKeyColor !== "green") &&
+                    !lowerThirdMode &&
                     (() => {
                       const bg = isLive
                         ? currentSlide?.backgroundOverride ||
@@ -6178,7 +6328,10 @@ export default function OperatorDashboard() {
                       : previewSlide?.backgroundOverride ||
                         previewSlide?.background ||
                         activeBackground;
-                    const isLight = isLightBg(bg);
+                    const isLight =
+                      cameraBgEnabled && chromaKeyColor !== "green"
+                        ? false
+                        : isLightBg(bg);
 
                     const baseTextColor = slide.textColor || "#ffffff";
                     const textColor =
@@ -6389,7 +6542,7 @@ export default function OperatorDashboard() {
                       transitionDuration,
                       animSpeedPreset,
                     );
-                    const monitorAnimKey = `${slideAny.parentId || "sys"}-${slideAny.slideIdx ?? "0"}-${slide.content || ""}-${slide.type}-${slideTransPreset}-${textAnimPreset}-${animSpeedPreset}`;
+                    const monitorAnimKey = `${lowerThirdMode ? "lt" : "fs"}-${slideAny.parentId || "sys"}-${slideAny.slideIdx ?? "0"}-${slide.content || ""}-${slide.type}-${slideTransPreset}-${textAnimPreset}-${animSpeedPreset}`;
 
                     const renderMonitorLines = (
                       rawText: string,
@@ -6533,7 +6686,7 @@ export default function OperatorDashboard() {
                               </div>
                             ) : slide.type === "scripture" ? (
                               <div
-                                className={`flex flex-col ${textAlign === "left" ? "items-start" : textAlign === "right" ? "items-end" : "items-center"} ${lowerThirdMode ? "bg-black/85 backdrop-blur-md p-1.5 rounded border border-white/15 w-full text-center" : "w-full"}`}
+                                className={`flex flex-col ${textAlign === "left" ? "items-start" : textAlign === "right" ? "items-end" : "items-center"} ${lowerThirdMode ? "bg-[#09090b]/92 p-1.5 rounded border border-white/15 w-full text-center shadow-lg" : "w-full"}`}
                               >
                                 {slide.content && !lowerThirdMode && (
                                   <div
@@ -6571,7 +6724,7 @@ export default function OperatorDashboard() {
                               <div
                                 className={
                                   lowerThirdMode
-                                    ? "bg-black/85 backdrop-blur-md px-3 py-1 rounded-md shadow-xl w-full text-center border border-white/15"
+                                    ? "bg-[#09090b]/92 px-3 py-1 rounded-md shadow-xl w-full text-center border border-white/15"
                                     : "w-full text-center"
                                 }
                               >
@@ -6584,7 +6737,7 @@ export default function OperatorDashboard() {
                               </div>
                             ) : (
                               <div
-                                className={`flex flex-col ${textAlign === "left" ? "items-start" : textAlign === "right" ? "items-end" : "items-center"} ${lowerThirdMode ? "bg-black/85 backdrop-blur-md p-1.5 rounded border border-white/15 w-full text-center" : "w-full"}`}
+                                className={`flex flex-col ${textAlign === "left" ? "items-start" : textAlign === "right" ? "items-end" : "items-center"} ${lowerThirdMode ? "bg-[#09090b]/92 p-1.5 rounded border border-white/15 w-full text-center shadow-lg" : "w-full"}`}
                               >
                                 {slide.title && (
                                   <p
@@ -12159,6 +12312,237 @@ export default function OperatorDashboard() {
                     </div>
                   </div>
 
+                  {/* Camera Device Background for OBS & Live Output */}
+                  <div className="space-y-2 p-3 bg-[#09090b] border border-[#27272a] rounded-xl">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                          <Camera className="w-3.5 h-3.5 text-[#f5cc00]" />
+                          Background Kamera (OBS & Live Output)
+                        </label>
+                        <p className="text-[8.5px] text-slate-400 font-sans mt-0.5">
+                          Gunakan input kamera / capture card yang terdeteksi sebagai latar belakang Live Output & OBS.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !cameraBgEnabled;
+                          setCameraBgEnabled(next);
+                          localStorage.setItem(
+                            "cp_settings_camera_bg_enabled",
+                            String(next),
+                          );
+                          if (next && detectedCameras.length === 0) {
+                            void handleDetectCameras(true, true);
+                          }
+                          if (next && chromaKeyColor === "green") {
+                            setChromaKeyColor("transparent");
+                            localStorage.setItem(
+                              "cp_settings_chroma_key_color",
+                              "transparent",
+                            );
+                          }
+                        }}
+                        className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer shrink-0 ${
+                          cameraBgEnabled
+                            ? "bg-[#f5cc00] text-[#000000]"
+                            : "bg-[#141417] text-slate-300 border border-[#27272a] hover:border-[#cca000]/50"
+                        }`}
+                      >
+                        {cameraBgEnabled ? "Kamera Aktif" : "Aktifkan"}
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2 items-center">
+                      <select
+                        value={cameraBgDeviceId}
+                        onChange={(e) => {
+                          const devId = e.target.value;
+                          const found = detectedCameras.find(
+                            (d) => d.deviceId === devId,
+                          );
+                          setCameraBgDeviceId(devId);
+                          setCameraBgLabel(found?.label || "");
+                          localStorage.setItem(
+                            "cp_settings_camera_bg_device_id",
+                            devId,
+                          );
+                          localStorage.setItem(
+                            "cp_settings_camera_bg_label",
+                            found?.label || "",
+                          );
+                          if (devId && !cameraBgEnabled) {
+                            setCameraBgEnabled(true);
+                            localStorage.setItem(
+                              "cp_settings_camera_bg_enabled",
+                              "true",
+                            );
+                          }
+                        }}
+                        className="flex-1 bg-[#000000] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-slate-100 text-[10px] font-sans outline-none focus:border-[#f5cc00] cursor-pointer"
+                      >
+                        {detectedCameras.length === 0 ? (
+                          <option value="">
+                            -- Klik Deteksi Kamera terlebih dahulu --
+                          </option>
+                        ) : (
+                          detectedCameras.map((cam, i) => (
+                            <option key={cam.deviceId || i} value={cam.deviceId}>
+                              {cam.label}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleDetectCameras(true, true)}
+                        disabled={isDetectingCameras}
+                        className="px-2.5 py-1.5 bg-[#141417] hover:bg-[#1e1e24] text-[#f5cc00] border border-[#cca000]/40 rounded-lg text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 ${isDetectingCameras ? "animate-spin" : ""}`}
+                        />
+                        Deteksi
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !cameraBgMirror;
+                          setCameraBgMirror(next);
+                          localStorage.setItem(
+                            "cp_settings_camera_bg_mirror",
+                            String(next),
+                          );
+                        }}
+                        className={`px-2 py-1.5 rounded-lg border text-[9px] font-bold uppercase flex items-center gap-1 cursor-pointer shrink-0 ${
+                          cameraBgMirror
+                            ? "bg-[#141417] border-[#f5cc00] text-[#f5cc00]"
+                            : "bg-[#000000] border-[#27272a] text-slate-400"
+                        }`}
+                        title="Flip horizontal kamera"
+                      >
+                        <FlipHorizontal className="w-3 h-3" />
+                      </button>
+                    </div>
+                    {cameraDetectError && (
+                      <p className="text-[9px] text-amber-300 font-sans">
+                        {cameraDetectError}
+                      </p>
+                    )}
+                    {(cameraBgEnabled || detectedCameras.length > 0) && (
+                      <div className="pt-1.5 space-y-2 border-t border-[#27272a]/70">
+                        {cameraBgEnabled && (
+                          <div className="relative h-24 w-full rounded-lg overflow-hidden border border-[#f5cc00]/40 bg-black">
+                            <CameraFeed
+                              deviceId={cameraBgDeviceId}
+                              deviceLabel={cameraBgLabel}
+                              mirror={cameraBgMirror}
+                              fit={cameraBgFit}
+                              brightness={cameraBgBrightness}
+                              opacity={cameraBgOpacity}
+                              blur={cameraBgBlur}
+                              className="w-full h-full"
+                            />
+                            <div className="absolute bottom-1.5 left-2 px-1.5 py-0.5 rounded bg-black/80 text-[8.5px] font-bold text-[#f5cc00] flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              {cameraBgLabel || "Kamera Aktif"}
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-3 text-[9px] text-slate-300 font-sans">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next =
+                                cameraBgFit === "cover" ? "contain" : "cover";
+                              setCameraBgFit(next);
+                              localStorage.setItem(
+                                "cp_settings_camera_bg_fit",
+                                next,
+                              );
+                            }}
+                            className="px-2 py-1 rounded border bg-[#000000] border-[#27272a] text-slate-300 hover:text-white font-bold uppercase cursor-pointer"
+                          >
+                            Fit: {cameraBgFit === "cover" ? "Penuh" : "Utuh"}
+                          </button>
+                          <label className="flex items-center gap-1.5">
+                            <span className="text-slate-400 font-bold uppercase">
+                              Cahaya:
+                            </span>
+                            <input
+                              type="range"
+                              min={30}
+                              max={130}
+                              step={5}
+                              value={cameraBgBrightness}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10);
+                                setCameraBgBrightness(val);
+                                localStorage.setItem(
+                                  "cp_settings_camera_bg_brightness",
+                                  String(val),
+                                );
+                              }}
+                              className="w-16 accent-[#f5cc00] h-1 cursor-pointer"
+                            />
+                            <span className="font-mono text-[#f5cc00] w-7">
+                              {cameraBgBrightness}%
+                            </span>
+                          </label>
+                          <label className="flex items-center gap-1.5">
+                            <span className="text-slate-400 font-bold uppercase">
+                              Opasitas:
+                            </span>
+                            <input
+                              type="range"
+                              min={20}
+                              max={100}
+                              step={5}
+                              value={cameraBgOpacity}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10);
+                                setCameraBgOpacity(val);
+                                localStorage.setItem(
+                                  "cp_settings_camera_bg_opacity",
+                                  String(val),
+                                );
+                              }}
+                              className="w-14 accent-[#f5cc00] h-1 cursor-pointer"
+                            />
+                            <span className="font-mono text-[#f5cc00] w-7">
+                              {cameraBgOpacity}%
+                            </span>
+                          </label>
+                          <label className="flex items-center gap-1.5">
+                            <span className="text-slate-400 font-bold uppercase">
+                              Blur:
+                            </span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={12}
+                              step={1}
+                              value={cameraBgBlur}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10);
+                                setCameraBgBlur(val);
+                                localStorage.setItem(
+                                  "cp_settings_camera_bg_blur",
+                                  String(val),
+                                );
+                              }}
+                              className="w-14 accent-[#f5cc00] h-1 cursor-pointer"
+                            />
+                            <span className="font-mono text-[#f5cc00] w-5">
+                              {cameraBgBlur}px
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Font Sizing scale factor */}
                   <div className="space-y-2 pt-1">
                     <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -12428,6 +12812,39 @@ export default function OperatorDashboard() {
                       (parseInt(prev) + 1).toString(),
                     );
 
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_enabled",
+                      String(cameraBgEnabled),
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_device_id",
+                      cameraBgDeviceId,
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_label",
+                      cameraBgLabel,
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_mirror",
+                      String(cameraBgMirror),
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_brightness",
+                      String(cameraBgBrightness),
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_opacity",
+                      String(cameraBgOpacity),
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_blur",
+                      String(cameraBgBlur),
+                    );
+                    localStorage.setItem(
+                      "cp_settings_camera_bg_fit",
+                      cameraBgFit,
+                    );
+
                     syncSettings({
                       outputResolution,
                       transitionDuration,
@@ -12437,6 +12854,14 @@ export default function OperatorDashboard() {
                       globalFontSizeScale,
                       globalTextShadowStyle,
                       chromaKeyColor,
+                      cameraBgEnabled,
+                      cameraBgDeviceId,
+                      cameraBgLabel,
+                      cameraBgMirror,
+                      cameraBgBrightness,
+                      cameraBgOpacity,
+                      cameraBgBlur,
+                      cameraBgFit,
                     });
 
                     setShowSettingsModal(false);
@@ -14487,9 +14912,14 @@ Haleluya pujilah Dia...`}
               </button>
               <button
                 onClick={() => {
-                  setLowerThirdMode(!lowerThirdMode);
+                  const next = !lowerThirdMode;
+                  setLowerThirdMode(next);
+                  localStorage.setItem(
+                    "cp_settings_lower_third_mode",
+                    String(next),
+                  );
                   showToast(
-                    `Lower Third ${!lowerThirdMode ? "Aktif" : "Nonaktif"}`,
+                    `Lower Third ${next ? "Aktif" : "Nonaktif"}`,
                     "info",
                   );
                 }}
@@ -14525,9 +14955,14 @@ Haleluya pujilah Dia...`}
               </button>
               <button
                 onClick={() => {
-                  setLowerThirdMode(!lowerThirdMode);
+                  const next = !lowerThirdMode;
+                  setLowerThirdMode(next);
+                  localStorage.setItem(
+                    "cp_settings_lower_third_mode",
+                    String(next),
+                  );
                   showToast(
-                    `Lower Third format disetel ke ${!lowerThirdMode ? "ON" : "OFF"}`,
+                    `Lower Third format disetel ke ${next ? "ON" : "OFF"}`,
                     "info",
                   );
                 }}
@@ -14540,6 +14975,7 @@ Haleluya pujilah Dia...`}
                   const col =
                     chromaKeyColor === "green" ? "transparent" : "green";
                   setChromaKeyColor(col);
+                  localStorage.setItem("cp_settings_chroma_key_color", col);
                   showToast(`Warna chroma-key diubah ke ${col}`, "info");
                 }}
                 className="w-full text-left px-3 py-1.5 hover:bg-[#141417] hover:text-white flex items-center gap-2 transition-colors cursor-pointer"

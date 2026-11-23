@@ -13,6 +13,7 @@ import {
   getSlideTransitionMotion,
   getTextLineMotionVariant,
 } from "../../lib/slideAnimations";
+import { CameraFeed } from "../CameraFeed";
 
 const isVideo = (url?: string) => {
   if (!url) return false;
@@ -679,6 +680,75 @@ export default function ProjectorDisplay() {
     }
   });
 
+  const [cameraBgEnabled, setCameraBgEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("cp_settings_camera_bg_enabled") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const [cameraBgDeviceId, setCameraBgDeviceId] = useState<string>(() => {
+    try {
+      return localStorage.getItem("cp_settings_camera_bg_device_id") || "";
+    } catch {
+      return "";
+    }
+  });
+
+  const [cameraBgLabel, setCameraBgLabel] = useState<string>(() => {
+    try {
+      return localStorage.getItem("cp_settings_camera_bg_label") || "";
+    } catch {
+      return "";
+    }
+  });
+
+  const [cameraBgMirror, setCameraBgMirror] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("cp_settings_camera_bg_mirror") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const [cameraBgBrightness, setCameraBgBrightness] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("cp_settings_camera_bg_brightness");
+      return saved ? parseInt(saved, 10) : 85;
+    } catch {
+      return 85;
+    }
+  });
+
+  const [cameraBgOpacity, setCameraBgOpacity] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("cp_settings_camera_bg_opacity");
+      return saved ? parseInt(saved, 10) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  const [cameraBgBlur, setCameraBgBlur] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("cp_settings_camera_bg_blur");
+      return saved ? parseInt(saved, 10) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const [cameraBgFit, setCameraBgFit] = useState<"cover" | "contain">(() => {
+    try {
+      return localStorage.getItem("cp_settings_camera_bg_fit") === "contain"
+        ? "contain"
+        : "cover";
+    } catch {
+      return "cover";
+    }
+  });
+
   useEffect(() => {
     const handleStorageChange = () => {
       try {
@@ -692,6 +762,17 @@ export default function ProjectorDisplay() {
         setGlobalFontSizeScale(savedScale ? parseInt(savedScale, 10) : 100);
         setGlobalTextShadowStyle(localStorage.getItem("cp_settings_text_shadow_style") || "Default");
         setChromaKeyColor(localStorage.getItem("cp_settings_chroma_key_color") || "transparent");
+        setCameraBgEnabled(localStorage.getItem("cp_settings_camera_bg_enabled") === "true");
+        setCameraBgDeviceId(localStorage.getItem("cp_settings_camera_bg_device_id") || "");
+        setCameraBgLabel(localStorage.getItem("cp_settings_camera_bg_label") || "");
+        setCameraBgMirror(localStorage.getItem("cp_settings_camera_bg_mirror") === "true");
+        const savedCamBright = localStorage.getItem("cp_settings_camera_bg_brightness");
+        setCameraBgBrightness(savedCamBright ? parseInt(savedCamBright, 10) : 85);
+        const savedCamOp = localStorage.getItem("cp_settings_camera_bg_opacity");
+        setCameraBgOpacity(savedCamOp ? parseInt(savedCamOp, 10) : 100);
+        const savedCamBlur = localStorage.getItem("cp_settings_camera_bg_blur");
+        setCameraBgBlur(savedCamBlur ? parseInt(savedCamBlur, 10) : 0);
+        setCameraBgFit(localStorage.getItem("cp_settings_camera_bg_fit") === "contain" ? "contain" : "cover");
       } catch (e) {
         console.error(e);
       }
@@ -710,17 +791,26 @@ export default function ProjectorDisplay() {
     if (syncedSettings.globalFontSizeScale !== undefined) setGlobalFontSizeScale(syncedSettings.globalFontSizeScale);
     if (syncedSettings.globalTextShadowStyle) setGlobalTextShadowStyle(syncedSettings.globalTextShadowStyle);
     if (syncedSettings.chromaKeyColor) setChromaKeyColor(syncedSettings.chromaKeyColor);
+    if (syncedSettings.cameraBgEnabled !== undefined) setCameraBgEnabled(syncedSettings.cameraBgEnabled);
+    if (syncedSettings.cameraBgDeviceId !== undefined) setCameraBgDeviceId(syncedSettings.cameraBgDeviceId);
+    if (syncedSettings.cameraBgLabel !== undefined) setCameraBgLabel(syncedSettings.cameraBgLabel);
+    if (syncedSettings.cameraBgMirror !== undefined) setCameraBgMirror(syncedSettings.cameraBgMirror);
+    if (syncedSettings.cameraBgBrightness !== undefined) setCameraBgBrightness(syncedSettings.cameraBgBrightness);
+    if (syncedSettings.cameraBgOpacity !== undefined) setCameraBgOpacity(syncedSettings.cameraBgOpacity);
+    if (syncedSettings.cameraBgBlur !== undefined) setCameraBgBlur(syncedSettings.cameraBgBlur);
+    if (syncedSettings.cameraBgFit !== undefined) setCameraBgFit(syncedSettings.cameraBgFit);
   }, [syncedSettings]);
 
-  // Keep root html/body transparent in OBS Direct Transparent / Lower Third mode
+  // Keep root html/body transparent ONLY in OBS Mode (never in Mobile Share or normal Projector)
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const obsCanvasTransparent = (isObsMode || lowerThirdMode) && chromaKeyColor !== "green";
+    const obsCanvasTransparent =
+      isObsMode && !isMobileShare && chromaKeyColor !== "green" && !cameraBgEnabled;
     document.documentElement.classList.toggle("obs-transparent-root", obsCanvasTransparent);
     return () => {
       document.documentElement.classList.remove("obs-transparent-root");
     };
-  }, [isObsMode, lowerThirdMode, chromaKeyColor]);
+  }, [isObsMode, isMobileShare, chromaKeyColor, cameraBgEnabled]);
 
   useEffect(() => {
     if (currentSlide) {
@@ -909,11 +999,14 @@ export default function ProjectorDisplay() {
     );
   }
 
+  const isExplicitlyOffline =
+    Boolean(currentSlide) &&
+    (currentSlide?.isLive === false ||
+      (currentSlide?.content === "System Offline" && currentSlide?.isLive === false));
+
   const isObsStandby =
     isObsMode &&
-    (!currentSlide ||
-      currentSlide.isLive === false ||
-      (currentSlide.content === "System Offline" && currentSlide.isLive === false));
+    (isExplicitlyOffline || (!currentSlide && !(cameraBgEnabled && chromaKeyColor !== "green")));
 
   if (isObsStandby) {
     return (
@@ -925,16 +1018,37 @@ export default function ProjectorDisplay() {
     );
   }
 
-  if (!currentSlide) return (
-    <div className="bg-[#000000] w-screen h-screen flex flex-col items-center justify-center text-white/30 font-sans p-10 md:p-20">
-      <div className="border border-[#27272a] p-12 rounded-3xl flex flex-col items-center bg-[#09090b]/70 backdrop-blur-md">
-        <AppLogo className="w-40 h-40 mb-8" showText={false} />
-        <h1 className="text-2xl md:text-3xl font-black tracking-[0.2em] uppercase mb-3 text-slate-100">Church Presenter</h1>
-        <div className="h-px w-32 bg-gradient-to-r from-transparent via-[#f5cc00]/75 to-transparent mb-6" />
-        <p className="text-xs md:text-sm font-mono tracking-[0.45em] text-[#cca000] uppercase">Waiting for Signal</p>
+  if (!currentSlide) {
+    if (!isMobileShare && cameraBgEnabled && chromaKeyColor !== "green") {
+      return (
+        <div className="relative w-screen h-screen overflow-hidden bg-black">
+          <CameraFeed
+            deviceId={cameraBgDeviceId}
+            deviceLabel={cameraBgLabel}
+            mirror={cameraBgMirror}
+            fit={cameraBgFit}
+            brightness={cameraBgBrightness}
+            opacity={cameraBgOpacity}
+            blur={cameraBgBlur}
+            className="absolute inset-0 w-full h-full"
+            showErrorFallback={!isObsMode}
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-black/25 pointer-events-none" />
+        </div>
+      );
+    }
+
+    return (
+      <div className="bg-[#000000] w-screen h-screen flex flex-col items-center justify-center text-white/30 font-sans p-10 md:p-20">
+        <div className="border border-[#27272a] p-12 rounded-3xl flex flex-col items-center bg-[#09090b]/70 backdrop-blur-md">
+          <AppLogo className="w-40 h-40 mb-8" showText={false} />
+          <h1 className="text-2xl md:text-3xl font-black tracking-[0.2em] uppercase mb-3 text-slate-100">Church Presenter</h1>
+          <div className="h-px w-32 bg-gradient-to-r from-transparent via-[#f5cc00]/75 to-transparent mb-6" />
+          <p className="text-xs md:text-sm font-mono tracking-[0.45em] text-[#cca000] uppercase">Waiting for Signal</p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   const isLight = isLightBg(currentSlide.backgroundOverride || currentSlide.background);
 
@@ -1100,7 +1214,7 @@ export default function ProjectorDisplay() {
     animationSpeedValue,
   );
 
-  const slideRenderKey = `${currentSlide.parentId || ""}-${currentSlide.slideIdx ?? ""}-${currentSlide.title || ""}-${currentSlide.content || ""}-${currentSlide.type}-${slideTransitionValue}-${textAnimationValue}-${animationSpeedValue}`;
+  const slideRenderKey = `${lowerThirdMode ? "lt" : "fs"}-${currentSlide.parentId || ""}-${currentSlide.slideIdx ?? ""}-${currentSlide.title || ""}-${currentSlide.content || ""}-${currentSlide.type}-${slideTransitionValue}-${textAnimationValue}-${animationSpeedValue}`;
 
   const renderAnimatedLines = (rawText: string, wrapQuotes = false) => {
     const formatted = wrapQuotes ? `"${rawText}"` : rawText;
@@ -1112,7 +1226,7 @@ export default function ProjectorDisplay() {
       const lineMotion = getTextLineMotionVariant(
         textAnimationValue,
         idx,
-        Math.max(0.6, transitionDuration),
+        lowerThirdMode ? Math.min(0.65, Math.max(0.35, transitionDuration)) : Math.max(0.6, transitionDuration),
         animationSpeedValue,
       );
       if (!lineMotion) {
@@ -1142,23 +1256,48 @@ export default function ProjectorDisplay() {
     rawSlideBg.toLowerCase() === "#000000" ||
     rawSlideBg.toLowerCase() === "#000" ||
     rawSlideBg.toLowerCase() === "transparent";
+  const isObsChromaActive = isObsMode && !isMobileShare;
+  const shouldUseCameraBackground =
+    !isMobileShare && cameraBgEnabled && (!isObsChromaActive || chromaKeyColor !== "green");
   const shouldShowObsDirectTransparent =
-    isObsMode && (lowerThirdMode || (chromaKeyColor === "transparent" && isEmptyOrBlackBg));
+    !shouldUseCameraBackground &&
+    isObsChromaActive &&
+    ((lowerThirdMode && chromaKeyColor !== "green") ||
+      (chromaKeyColor === "transparent" && isEmptyOrBlackBg));
   const shouldShowObsGreenKey =
-    (isObsMode || lowerThirdMode) && chromaKeyColor === "green" && (lowerThirdMode || isEmptyOrBlackBg);
-  const outerCanvasBgClass = lowerThirdMode
-    ? (chromaKeyColor === "green" ? "bg-[#00ff00]" : "bg-transparent")
-    : shouldShowObsGreenKey
-      ? "bg-[#00ff00]"
-      : shouldShowObsDirectTransparent
-        ? "bg-transparent"
-        : "bg-black";
+    !shouldUseCameraBackground &&
+    isObsChromaActive &&
+    chromaKeyColor === "green" &&
+    (lowerThirdMode || isEmptyOrBlackBg);
+  const outerCanvasBgClass = shouldShowObsGreenKey
+    ? "bg-[#00ff00]"
+    : shouldShowObsDirectTransparent
+      ? "bg-transparent"
+      : "bg-black";
 
   return (
-    <div className={`slide-canvas-preserve relative w-screen h-screen overflow-hidden ${outerCanvasBgClass} ${isLight ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
-      <div className={`relative overflow-hidden flex items-center justify-center @container ${outputResolution === '4:3' ? 'aspect-[4/3] h-full max-w-full' : 'w-full h-full'} ${lowerThirdMode || isObsMode ? (shouldShowObsGreenKey ? 'bg-[#00ff00]' : 'bg-transparent') : ''}`} style={{ containerType: 'inline-size' }}>
-        {/* Background with intelligent color / image / video rendering support */}
-      {!lowerThirdMode && !shouldShowObsDirectTransparent && !shouldShowObsGreenKey && (() => {
+    <div className={`slide-canvas-preserve relative w-screen h-screen overflow-hidden ${outerCanvasBgClass} ${isLight && !shouldUseCameraBackground && !shouldShowObsDirectTransparent && !shouldShowObsGreenKey ? 'text-zinc-900' : 'text-white'} ${fontClass} flex items-center justify-center`}>
+      <div className={`relative overflow-hidden flex items-center justify-center @container ${outputResolution === '4:3' ? 'aspect-[4/3] h-full max-w-full' : 'w-full h-full'} ${shouldShowObsGreenKey ? 'bg-[#00ff00]' : shouldShowObsDirectTransparent ? 'bg-transparent' : 'bg-black'}`} style={{ containerType: 'inline-size' }}>
+        {/* Live Camera Device Background (when enabled for OBS or Live Output) */}
+        {shouldUseCameraBackground && (
+          <div className="absolute inset-0 z-0 pointer-events-none">
+            <CameraFeed
+              deviceId={cameraBgDeviceId}
+              deviceLabel={cameraBgLabel}
+              mirror={cameraBgMirror}
+              fit={cameraBgFit}
+              brightness={cameraBgBrightness}
+              opacity={cameraBgOpacity}
+              blur={cameraBgBlur}
+              className="w-full h-full"
+              showErrorFallback={!isObsMode}
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/35 pointer-events-none" />
+          </div>
+        )}
+
+        {/* Standard Image / Video / Color Background */}
+      {!shouldUseCameraBackground && !shouldShowObsDirectTransparent && !shouldShowObsGreenKey && (() => {
         const rawBg = currentSlide.backgroundOverride || currentSlide.background || "";
         const bgKey = extractMediaPath(rawBg) || rawBg;
         const resolvedBgSrc = resolveMedia(rawBg);
@@ -1322,10 +1461,12 @@ export default function ProjectorDisplay() {
       >
         <div className={lowerThirdMode ? `w-full max-w-[90%] flex flex-col ${alignClass}` : "relative w-full h-full flex flex-col justify-center"}>
           {(() => {
+            const lowerThirdBoxClass =
+              "bg-[#09090b]/92 px-8 md:px-10 py-4 md:py-5 rounded-2xl shadow-[0_12px_36px_rgba(0,0,0,0.88)] border border-white/15 w-full";
             const slideContentBody = (
-              <div style={{ perspective: 1000 }} className="w-full">
+              <div style={slideTransitionValue === "flip" ? { perspective: 1000 } : undefined} className="w-full">
               {currentSlide.type === 'lyrics' && currentSlide.content && (
-                <div className={lowerThirdMode ? "bg-black/75 backdrop-blur-md px-10 py-5 rounded-2xl shadow-xl w-full text-center border border-white/10" : "w-full"}>
+                <div className={lowerThirdMode ? `${lowerThirdBoxClass} text-center` : "w-full"}>
                   <h1 
                     style={customStyle}
                     className={`${weightClass} ${italicClass} ${transformClass} ${trackingClass} ${spacingClass} ${fontClass} whitespace-pre-line px-4`}
@@ -1336,8 +1477,8 @@ export default function ProjectorDisplay() {
               )}
 
               {currentSlide.type === 'scripture' && (currentSlide.content || currentSlide.title) && (
-                <div className={`flex flex-col ${textAlign === 'left' ? 'items-start' : textAlign === 'right' ? 'items-end' : 'items-center'} ${lowerThirdMode ? "bg-black/75 backdrop-blur-md p-6 rounded-2xl shadow-xl border border-white/10 w-full text-center" : "w-full"}`}>
-                  {currentSlide.content && !lowerThirdMode && <div className={`w-16 h-1 ${isLight ? 'bg-blue-700' : 'bg-blue-500'} mb-8 rounded-full`} />}
+                <div className={`flex flex-col ${textAlign === 'left' ? 'items-start' : textAlign === 'right' ? 'items-end' : 'items-center'} ${lowerThirdMode ? `${lowerThirdBoxClass} text-center` : "w-full"}`}>
+                  {currentSlide.content && !lowerThirdMode && <div className={`w-16 h-1 ${isLight && !shouldUseCameraBackground ? 'bg-blue-700' : 'bg-blue-500'} mb-8 rounded-full`} />}
                   <p 
                     style={customStyle}
                     className={`${weightClass} ${italicClass} ${transformClass} ${trackingClass} ${spacingClass} ${fontClass} whitespace-pre-line ${lowerThirdMode ? 'mb-2' : 'mb-12'}`}
@@ -1346,25 +1487,25 @@ export default function ProjectorDisplay() {
                   </p>
                   {currentSlide.title && (
                     <div className="flex items-center gap-4">
-                      {!lowerThirdMode && <div className={`h-px w-8 ${isLight ? 'bg-black/15' : 'bg-white/20'}`} />}
+                      {!lowerThirdMode && <div className={`h-px w-8 ${isLight && !shouldUseCameraBackground ? 'bg-black/15' : 'bg-white/20'}`} />}
                       <p 
                         style={{
-                          color: isLight && !lowerThirdMode ? '#1e3a8a' : '#60a5fa',
-                          textShadow: isLight && !lowerThirdMode ? '0 1px 2px rgba(255,255,255,0.8)' : '0 2px 8px rgba(0,0,0,0.95)',
+                          color: isLight && !lowerThirdMode && !shouldUseCameraBackground ? '#1e3a8a' : '#60a5fa',
+                          textShadow: isLight && !lowerThirdMode && !shouldUseCameraBackground ? '0 1px 2px rgba(255,255,255,0.8)' : '0 2px 8px rgba(0,0,0,0.95)',
                           ...(lowerThirdMode ? { fontSize: '14px' } : {})
                         }}
                         className={lowerThirdMode ? `text-xs font-black uppercase tracking-widest text-blue-400 ${fontClass}` : `text-xl md:text-3xl font-black uppercase tracking-widest ${fontClass}`}
                       >
                         {currentSlide.title}
                       </p>
-                      {!lowerThirdMode && <div className={`h-px w-8 ${isLight ? 'bg-black/15' : 'bg-white/20'}`} />}
+                      {!lowerThirdMode && <div className={`h-px w-8 ${isLight && !shouldUseCameraBackground ? 'bg-black/15' : 'bg-white/20'}`} />}
                     </div>
                   )}
                 </div>
               )}
 
               {currentSlide.type === 'announcement' && (currentSlide.content || currentSlide.title) && (
-                <div className={`w-full ${lowerThirdMode ? "bg-black/75 backdrop-blur-md p-6 rounded-2xl shadow-xl border border-white/10 text-center" : ""}`}>
+                <div className={`w-full ${lowerThirdMode ? `${lowerThirdBoxClass} text-center` : ""}`}>
                   {currentSlide.title && <h2 className={`${lowerThirdMode ? 'text-xs md:text-sm mb-1 text-blue-400 font-bold' : 'text-2xl md:text-4xl font-light mb-4'} tracking-tighter opacity-70 uppercase ${fontClass}`}>{currentSlide.title}</h2>}
                   {currentSlide.content && (
                     <p 
@@ -1405,14 +1546,18 @@ export default function ProjectorDisplay() {
               </div>
             );
 
-            if (isObsMode) {
+            if (isObsMode || lowerThirdMode) {
               return (
                 <motion.div
                   key={slideRenderKey}
                   initial={motionProps.initial}
                   animate={motionProps.animate}
-                  transition={motionProps.transition}
-                  style={{ perspective: 1200 }}
+                  transition={
+                    lowerThirdMode
+                      ? { duration: Math.min(0.45, motionProps.transition?.duration ?? 0.3), ease: [0.16, 1, 0.3, 1] }
+                      : motionProps.transition
+                  }
+                  style={slideTransitionValue === "flip" ? { perspective: 1200 } : undefined}
                   className={lowerThirdMode ? "w-full flex flex-col justify-center" : "w-full h-full flex flex-col justify-center"}
                 >
                   {slideContentBody}
@@ -1429,17 +1574,11 @@ export default function ProjectorDisplay() {
                   exit={
                     slideTransitionValue === "none"
                       ? { opacity: 0, transition: { duration: 0 } }
-                      : lowerThirdMode
-                        ? { opacity: 0, height: 0, overflow: "hidden", transition: { duration: 0.12 } }
-                        : { opacity: 0, transition: { duration: 0.16 } }
+                      : { opacity: 0, transition: { duration: 0.16 } }
                   }
                   transition={motionProps.transition}
-                  style={{ perspective: 1200 }}
-                  className={
-                    lowerThirdMode
-                      ? "w-full flex flex-col justify-center"
-                      : "absolute inset-0 w-full h-full flex flex-col justify-center"
-                  }
+                  style={slideTransitionValue === "flip" ? { perspective: 1200 } : undefined}
+                  className="absolute inset-0 w-full h-full flex flex-col justify-center"
                 >
                   {slideContentBody}
                 </motion.div>

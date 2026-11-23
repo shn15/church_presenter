@@ -15,6 +15,14 @@ export interface SyncedSettings {
   globalFontSizeScale?: number;
   globalTextShadowStyle?: string;
   chromaKeyColor?: string;
+  cameraBgEnabled?: boolean;
+  cameraBgDeviceId?: string;
+  cameraBgLabel?: string;
+  cameraBgMirror?: boolean;
+  cameraBgBrightness?: number;
+  cameraBgOpacity?: number;
+  cameraBgBlur?: number;
+  cameraBgFit?: "cover" | "contain";
   _syncTs?: number;
   _syncSession?: string;
 }

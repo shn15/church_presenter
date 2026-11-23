@@ -162,7 +162,7 @@ export default function Gateway() {
       setAccounts(updatedList);
       setActiveAccountState(newAcc);
 
-      setRegSuccess(`Akun "${newAcc.name}" berhasil dibuat & langsung aktif!`);
+      setRegSuccess(`Akun "${newAcc.name}" berhasil dibuat akun telah aktif!`);
       setTimeout(() => {
         setRegName("");
         setRegUsername("");
@@ -282,7 +282,7 @@ export default function Gateway() {
             Sistem Presentasi Gereja
           </h2>
           <p className="text-xs md:text-sm text-slate-300/85 max-w-xl mx-auto leading-relaxed font-mono font-normal no-underline">
-            Sistem dimuat per akun. Lagu, Alkitab, jadwal ibadah, dan proyektor akun tidak akan saling tercampur dengan akun lainnya.
+            Sistem dikembangkan untuk mempermudah pelayanan di gereja. Dengan menampilkan lirik lagu, nats alkitab, dan lainnya ke dalam proyektor serta memadukan berbagai fitur lainnya yang disediakan oleh pengembang.
           </p>
         </motion.div>
 
