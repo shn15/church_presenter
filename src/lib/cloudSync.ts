@@ -129,8 +129,11 @@ export class CloudSyncClient {
   private lastStatusTs = 0;
   private subscribedAt = 0;
   private lastPingId = "";
+  private lastActiveSenderId = "";
   private currentStatus: OperatorStatus | null = null;
   private lastPublishedSlide: Slide | null = null;
+  private lastPublishedSettings: SyncedSettings | null = null;
+  private lastPublishedShift: Shift | null = null;
 
   private requestedMedia = new Map<string, number>();
   private queuedMediaRequests = new Set<string>();
@@ -284,12 +287,16 @@ export class CloudSyncClient {
       const ts = typeof data.ts === "number" ? data.ts : Date.now();
       const isDirectReply = Boolean(data.replyTo && data.replyTo === this.lastPingId);
       const isLivePushAfterSubscribe =
-        this.subscribedAt > 0 && Date.now() - this.subscribedAt > 1200;
+        this.subscribedAt > 0 && Date.now() - this.subscribedAt > 1500;
+      const senderChanged = Boolean(data.senderId && data.senderId !== this.lastActiveSenderId);
 
-      // Always accept explicit inactive status immediately; for active status, require
-      // either a direct reply to our ping or a live push after initial retained flush.
-      if (!data.active || isDirectReply || isLivePushAfterSubscribe) {
-        if (ts >= this.lastStatusTs || !data.active || isDirectReply) {
+      // Ignore initial retained flush (both active and stale offline LWT) unless it's a direct ping reply
+      // or a live update arriving after the initial retained flush window.
+      if (isDirectReply || isLivePushAfterSubscribe) {
+        if (data.active && data.senderId) {
+          this.lastActiveSenderId = data.senderId;
+        }
+        if (ts >= this.lastStatusTs || isDirectReply || (data.active && senderChanged)) {
           this.lastStatusTs = ts;
           this.callbacks.onOperatorStatus?.({
             active: Boolean(data.active),
@@ -312,6 +319,12 @@ export class CloudSyncClient {
           },
           data?.pingId
         );
+        if (this.lastPublishedSettings) {
+          this.publishSettings(this.lastPublishedSettings);
+        }
+        if (this.lastPublishedShift) {
+          this.publishShift(this.lastPublishedShift);
+        }
         if (this.currentStatus.active && this.lastPublishedSlide) {
           this.publishSlide(this.lastPublishedSlide);
         }
@@ -387,6 +400,7 @@ export class CloudSyncClient {
   public publishShift(shift: Shift) {
     const ts = Date.now();
     this.lastShiftTs = ts;
+    this.lastPublishedShift = shift;
     if (this.client?.connected) {
       this.client.publish(
         `${this.prefix}/shift`,
@@ -399,6 +413,7 @@ export class CloudSyncClient {
   public publishSettings(settings: SyncedSettings) {
     const ts = Date.now();
     this.lastSettingsTs = ts;
+    this.lastPublishedSettings = settings;
     if (this.client?.connected) {
       this.client.publish(
         `${this.prefix}/settings`,

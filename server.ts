@@ -645,6 +645,8 @@ async function startServer() {
   const activeOperators = new Set<string>();
   const operatorAccountMap = new Map<string, string>();
   const operatorStatusMap = new Map<string, { active: boolean; isLive: boolean; ts: number }>();
+  const operatorDisconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const accountSyncRoomMap = new Map<string, string>();
   const currentSlideMap = new Map<string, any>();
   const currentSettingsMap = new Map<string, any>();
   const currentShiftMap = new Map<string, any>();
@@ -654,6 +656,16 @@ async function startServer() {
       if (acc === accountId) return true;
     }
     return false;
+  };
+
+  const isOperatorConsideredActive = (accountId: string) => {
+    if (hasActiveOperatorForAccount(accountId)) return true;
+    const storedOpStatus = operatorStatusMap.get(accountId);
+    return Boolean(
+      storedOpStatus &&
+        storedOpStatus.active === true &&
+        Date.now() - storedOpStatus.ts < 30000
+    );
   };
 
   // GET endpoint to fetch current active shift
@@ -675,16 +687,24 @@ async function startServer() {
     const accountId = (req.query.account as string) || "acc_default";
     const slide = currentSlideMap.get(accountId) || null;
     const settings = currentSettingsMap.get(accountId) || null;
+    const syncRoomId = accountSyncRoomMap.get(accountId) || null;
     const storedOpStatus = operatorStatusMap.get(accountId);
     const hasOp = hasActiveOperatorForAccount(accountId);
-    const operatorStatus = storedOpStatus
-      ? storedOpStatus
-      : hasOp
-        ? { active: true, isLive: slide ? slide.isLive !== false : true, ts: Date.now() }
-        : slide
-          ? { active: true, isLive: slide.isLive !== false, ts: Date.now() }
-          : null;
-    return res.json({ slide, settings, operatorStatus });
+    const isFreshStored = Boolean(storedOpStatus && Date.now() - storedOpStatus.ts < 30000);
+    const operatorStatus = hasOp
+      ? {
+          active: storedOpStatus ? storedOpStatus.active : true,
+          isLive: storedOpStatus ? storedOpStatus.isLive : (slide ? slide.isLive !== false : true),
+          ts: Date.now(),
+        }
+      : isFreshStored && storedOpStatus
+        ? storedOpStatus
+        : storedOpStatus
+          ? storedOpStatus
+          : slide && slide.isLive !== false
+            ? { active: true, isLive: true, ts: Date.now() }
+            : null;
+    return res.json({ slide, settings, operatorStatus, syncRoomId });
   });
 
   const shouldAcceptMonotonicUpdate = (existing: any, incoming: any) => {
@@ -705,6 +725,23 @@ async function startServer() {
   app.post("/api/live-output", (req: any, res: any) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     const accountId = (req.body?.accountId as string) || (req.query.account as string) || "acc_default";
+    if (typeof req.body?.syncRoomId === "string" && req.body.syncRoomId.trim()) {
+      accountSyncRoomMap.set(accountId, req.body.syncRoomId.trim());
+    }
+    if (req.body?.operatorStatus && typeof req.body.operatorStatus.active === "boolean") {
+      const pendingTimer = operatorDisconnectTimers.get(accountId);
+      if (req.body.operatorStatus.active && pendingTimer) {
+        clearTimeout(pendingTimer);
+        operatorDisconnectTimers.delete(accountId);
+      }
+      const statusPayload = {
+        active: Boolean(req.body.operatorStatus.active),
+        isLive: req.body.operatorStatus.active ? req.body.operatorStatus.isLive !== false : false,
+        ts: Date.now(),
+      };
+      operatorStatusMap.set(accountId, statusPayload);
+      io.to("room_" + accountId).emit("operator:status", statusPayload);
+    }
     if (req.body?.slide) {
       const existingSlide = currentSlideMap.get(accountId);
       if (shouldAcceptMonotonicUpdate(existingSlide, req.body.slide)) {
@@ -2887,13 +2924,6 @@ ${text}
       }
 
       const storedSlide = currentSlideMap.get(clientAccountId);
-      const slide = storedSlide || {
-        content: "Selamat Datang di Ibadah Hari Ini",
-        title: "Welcome",
-        background: "https://images.unsplash.com/photo-1438232992991-995b7058633e?auto=format&fit=crop&q=80&w=2069",
-        type: "lyrics",
-        isLive: false
-      };
       const shift = currentShiftMap.get(clientAccountId) || {
         active: false,
         name: "",
@@ -2901,26 +2931,38 @@ ${text}
         token: ""
       };
       const storedSettings = currentSettingsMap.get(clientAccountId);
-      const hasOp = hasActiveOperatorForAccount(clientAccountId);
+      const isOpActiveNow = isOperatorConsideredActive(clientAccountId);
       const storedOpStatus = operatorStatusMap.get(clientAccountId);
-      const opStatus = hasOp
+      const opStatus = isOpActiveNow
         ? {
             active: storedOpStatus ? storedOpStatus.active : true,
-            isLive: storedOpStatus ? storedOpStatus.isLive : slide.isLive !== false,
+            isLive: storedOpStatus ? storedOpStatus.isLive : (storedSlide ? storedSlide.isLive !== false : true),
             ts: Date.now(),
           }
-        : { active: false, isLive: false, ts: Date.now() };
+        : storedOpStatus || null;
 
       if (storedSlide) {
-        socket.emit("slide:update", hasOp ? storedSlide : storedSlide);
-      } else {
-        socket.emit("slide:update", { ...slide, isLive: false });
+        const slideToSend =
+          isOpActiveNow && opStatus?.isLive && storedSlide.isLive === false && storedSlide.content !== "System Offline"
+            ? { ...storedSlide, isLive: true }
+            : storedSlide;
+        socket.emit("slide:update", slideToSend);
+      } else if (isOpActiveNow) {
+        socket.emit("slide:update", {
+          content: "Selamat Datang di Ibadah Hari Ini",
+          title: "Welcome",
+          background: "https://images.unsplash.com/photo-1438232992991-995b7058633e?auto=format&fit=crop&q=80&w=2069",
+          type: "lyrics",
+          isLive: opStatus ? opStatus.isLive : true
+        });
       }
       if (storedSettings) {
         socket.emit("settings:update", storedSettings);
       }
       socket.emit("shift:update", shift);
-      socket.emit("operator:status", opStatus);
+      if (opStatus) {
+        socket.emit("operator:status", opStatus);
+      }
     });
 
     // Default join room_acc_default
@@ -2931,6 +2973,11 @@ ${text}
 
     socket.on("register:operator", (data?: { accountId?: string; isLive?: boolean }) => {
       const accId = data?.accountId || clientAccountId;
+      const pendingTimer = operatorDisconnectTimers.get(accId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        operatorDisconnectTimers.delete(accId);
+      }
       activeOperators.add(socket.id);
       operatorAccountMap.set(socket.id, accId);
       const statusPayload = {
@@ -2946,6 +2993,11 @@ ${text}
       const accId = data?.accountId || clientAccountId;
       const isOpActive = Boolean(data?.active);
       if (isOpActive) {
+        const pendingTimer = operatorDisconnectTimers.get(accId);
+        if (pendingTimer) {
+          clearTimeout(pendingTimer);
+          operatorDisconnectTimers.delete(accId);
+        }
         activeOperators.add(socket.id);
         operatorAccountMap.set(socket.id, accId);
       } else {
@@ -2996,16 +3048,17 @@ ${text}
         activeOperators.delete(socket.id);
         operatorAccountMap.delete(socket.id);
         if (!hasActiveOperatorForAccount(opAcc)) {
-          const offlineStatus = { active: false, isLive: false, ts: Date.now() };
-          operatorStatusMap.set(opAcc, offlineStatus);
-          io.to("room_" + opAcc).emit("operator:status", offlineStatus);
-          const slide = currentSlideMap.get(opAcc);
-          if (slide) {
-            const nextTs = Math.max(Date.now(), (typeof slide._syncTs === "number" ? slide._syncTs : 0) + 1);
-            const updatedSlide = { ...slide, isLive: false, _syncTs: nextTs };
-            currentSlideMap.set(opAcc, updatedSlide);
-            io.to("room_" + opAcc).emit("slide:update", updatedSlide);
-          }
+          const prevTimer = operatorDisconnectTimers.get(opAcc);
+          if (prevTimer) clearTimeout(prevTimer);
+          const timer = setTimeout(() => {
+            operatorDisconnectTimers.delete(opAcc);
+            if (!isOperatorConsideredActive(opAcc)) {
+              const offlineStatus = { active: false, isLive: false, ts: Date.now() };
+              operatorStatusMap.set(opAcc, offlineStatus);
+              io.to("room_" + opAcc).emit("operator:status", offlineStatus);
+            }
+          }, 3000);
+          operatorDisconnectTimers.set(opAcc, timer);
         }
       }
       io.emit("clients:count", io.engine.clientsCount);

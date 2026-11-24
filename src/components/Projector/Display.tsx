@@ -942,15 +942,19 @@ export default function ProjectorDisplay() {
     );
   }
 
+  const isExplicitOfflineSlide =
+    currentSlide?.content === "System Offline" && currentSlide?.isLive === false;
+
   const isSystemChecking =
     isMobileShare &&
     operatorStatus === null &&
-    currentSlide?.isLive !== false;
+    !isExplicitOfflineSlide;
 
   const isSystemInactive =
     isMobileShare &&
-    (currentSlide?.isLive === false ||
-      (operatorStatus !== null && (!operatorStatus.active || !operatorStatus.isLive)));
+    (operatorStatus !== null
+      ? !operatorStatus.active || !operatorStatus.isLive
+      : isExplicitOfflineSlide);
 
   if (isSystemChecking) {
     return (
@@ -1018,7 +1022,7 @@ export default function ProjectorDisplay() {
     );
   }
 
-  if (!currentSlide) {
+  if (!currentSlide || (isMobileShare && isExplicitOfflineSlide && operatorStatus?.active && operatorStatus?.isLive)) {
     if (!isMobileShare && cameraBgEnabled && chromaKeyColor !== "green") {
       return (
         <div className="relative w-screen h-screen overflow-hidden bg-black">
